@@ -104,6 +104,10 @@ FocusScope {
 
   implicitHeight: column.implicitHeight
 
+  // What Panel.qml sizes the card from. Manage has no flexible element yet, so
+  // this is its natural height and the panel's 560px cap still applies to it.
+  readonly property real desiredHeight: column.implicitHeight
+
   // Pick the newest backup as soon as the list arrives, so the picker opens
   // on content instead of an empty frame. Then reconcile on every reload:
   // the list can change underneath the picker -- a delete reloads it, and

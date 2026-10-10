@@ -402,8 +402,8 @@ Panel {
     contentWidth: Math.min(desiredWidth,
                            panel.availableCardWidth > 0 ? panel.availableCardWidth : desiredWidth)
     contentHeight: panel.fittedContentHeight(
-                     root.browsing ? browser.implicitHeight
-                                   : (root.managing ? manageBrowser.implicitHeight
+                     root.browsing ? browser.desiredHeight
+                                   : (root.managing ? manageBrowser.desiredHeight
                                    : (root.pickingRepo ? pickerColumn.implicitHeight
                                    : (root.settingUp ? setupColumn.implicitHeight
                                                      : mainColumn.implicitHeight))),

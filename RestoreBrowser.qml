@@ -173,7 +173,35 @@ FocusScope {
   // area on a narrow panel.
   property bool timelineExpanded: false
 
-  implicitHeight: column.implicitHeight
+  // --- sizing --------------------------------------------------------------
+  //
+  // The panel caps its content at 560px (Panel.qml) and this view wants more:
+  // header, timeline, source chips, breadcrumb, filter and footer come to
+  // roughly 250px before the listing gets a pixel. The old fixed 300px listing
+  // on top of that pushed the footer past the panel's bottom edge, where it
+  // was clipped mid-sentence and could not be clicked.
+  //
+  // So the listing is the one element that gives way. The panel sizes itself
+  // from desiredHeight -- the height this view would like -- and the listing
+  // then takes whatever is left of the height actually granted. Everything
+  // else is measured by its own Column (chromeHeight), which never depends on
+  // the listing, so the two can be worked out in either order.
+  //
+  // The listing asks for a fixed 300px rather than its content height, and
+  // that is deliberate. listPath clears entries on a cache miss, so a
+  // content-driven height made the whole panel snap small for the length of
+  // every uncached folder and grow again -- a jump on each step through a
+  // hierarchy, which is the one thing you do constantly here. A fixed region
+  // also matches the mockup, and matches every file browser: short folders
+  // leave space rather than resizing the window around them.
+  readonly property real listMinHeight: Style.space(72)
+  readonly property real listNaturalHeight: Style.space(300)
+  readonly property real listHeight:
+    Math.max(root.listMinHeight,
+             Math.min(root.listNaturalHeight, root.height - column.chromeHeight))
+  readonly property real desiredHeight: column.chromeHeight + root.listNaturalHeight
+
+  implicitHeight: column.chromeHeight + root.listHeight
 
   function currentSnapshot() {
     for (var i = 0; i < BackItUpStore.snapshots.length; i++)
@@ -450,350 +478,378 @@ FocusScope {
     anchors.top: parent.top
     spacing: Style.space(10)
 
-    // --- header ------------------------------------------------------------
-
-    Item {
-      width: parent.width
-      implicitHeight: Style.space(30)
-
-      PanelActionButton {
-        id: backButton
-        anchors.left: parent.left
-        anchors.verticalCenter: parent.verticalCenter
-        iconText: BackItUpStore.iconArrowLeft
-        tooltipText: "Back"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        onClicked: root.back()
-      }
-
-      Text {
-        anchors.left: backButton.right
-        anchors.leftMargin: Style.space(8)
-        anchors.verticalCenter: parent.verticalCenter
-        text: "Restore"
-        textFormat: Text.PlainText
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        font.bold: true
-      }
-
-      // Which backup set you are looking in. A pill when there is only one,
-      // because a control with a single option is a label that costs a click.
-      Rectangle {
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        visible: BackItUpStore.destinations.length <= 1
-        implicitWidth: destLabel.implicitWidth + Style.space(14)
-        implicitHeight: destLabel.implicitHeight + Style.space(6)
-        radius: height / 2
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-        border.width: Style.space(1)
-        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14)
-
-        Text {
-          id: destLabel
-          anchors.centerIn: parent
-          text: BackItUpStore.browseName
-          textFormat: Text.PlainText
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-      }
-
-      Dropdown {
-        width: Style.space(130)
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        visible: BackItUpStore.destinations.length > 1
-        label: ""
-        showLabel: false
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        value: BackItUpStore.browseName
-        options: {
-          var list = []
-          for (var i = 0; i < BackItUpStore.destinations.length; i++) {
-            var d = BackItUpStore.destinations[i]
-            list.push({ value: String(d.name),
-                        label: BackItUpStore.destinationLabel(d) })
-          }
-          return list
-        }
-        onChanged: function(value) {
-          root.snapshotId = ""
-          // The roots belong to the snapshot we were looking at, which is not
-          // in this destination. Without clearing them the source picker keeps
-          // offering them while the new snapshots load, and picking one asks
-          // the CLI to list a path under no snapshot at all.
-          root.snapshotRoots = []
-          root.queue = []
-          BackItUpStore.browseDestination(value)
-          root.takeFocus()
-        }
-        onPopupOpenChanged: if (!popupOpen) root.takeFocus()
-      }
-    }
-
-    // --- snapshot timeline -------------------------------------------------
-
+    // Everything above the listing, measured as one block so the listing's own
+    // height can be worked out from what is left over.
     Column {
+      id: upper
       width: parent.width
-      spacing: Style.space(5)
-      visible: (BackItUpStore.snapshots || []).length > 0
+      spacing: column.spacing
 
-      Text {
-        text: "Backup"
-        textFormat: Text.PlainText
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        font.letterSpacing: 0.5
-      }
+        // --- header ------------------------------------------------------------
 
-      Flow {
-        width: parent.width
-        spacing: Style.space(6)
+        Item {
+          width: parent.width
+          implicitHeight: Style.space(30)
 
-        Repeater {
-          model: root.visibleChips
-
-          SnapshotChip {
-            day: root.chipDay(modelData)
-            detail: root.chipDetail(modelData)
-            selected: String(modelData.id) === root.snapshotId
+          PanelActionButton {
+            id: backButton
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: BackItUpStore.iconArrowLeft
+            tooltipText: "Back"
             foreground: root.foreground
-            accent: root.accent
             fontFamily: root.fontFamily
-            onClicked: {
-              root.openSnapshot(String(modelData.id))
-              root.takeFocus()
-            }
+            onClicked: root.back()
           }
-        }
-
-        SnapshotChip {
-          visible: !root.timelineExpanded && root.hiddenChipCount > 0
-          day: "+" + root.hiddenChipCount
-          detail: "more"
-          muted: true
-          foreground: root.foreground
-          accent: root.accent
-          fontFamily: root.fontFamily
-          onClicked: {
-            root.timelineExpanded = true
-            root.takeFocus()
-          }
-        }
-      }
-    }
-
-    // A snapshot can contain several configured source directories. Stay at
-    // one source root while browsing, but make every root reachable instead
-    // of silently treating the first path as the whole snapshot.
-    Flow {
-      width: parent.width
-      visible: root.snapshotRoots.length > 1
-      spacing: Style.space(6)
-
-      Text {
-        text: "Source"
-        anchors.verticalCenter: parent.verticalCenter
-        textFormat: Text.PlainText
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-      }
-
-      Repeater {
-        model: root.snapshotRoots
-
-        Rectangle {
-          readonly property bool current: String(modelData) === root.rootPath
-          implicitWidth: srcText.implicitWidth + Style.space(14)
-          implicitHeight: srcText.implicitHeight + Style.space(7)
-          radius: Style.space(6)
-          color: current ? StatusPalette.tint(root.accent, 0.13)
-                         : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-          border.width: Style.space(1)
-          border.color: current ? StatusPalette.line(root.accent, 0.5)
-                                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
 
           Text {
-            id: srcText
-            anchors.centerIn: parent
-            text: String(modelData)
+            anchors.left: backButton.right
+            anchors.leftMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Restore"
             textFormat: Text.PlainText
-            color: parent.current ? root.accent : root.dim
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+
+          // Which backup set you are looking in. A pill when there is only one,
+          // because a control with a single option is a label that costs a click.
+          Rectangle {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            visible: BackItUpStore.destinations.length <= 1
+            implicitWidth: destLabel.implicitWidth + Style.space(14)
+            implicitHeight: destLabel.implicitHeight + Style.space(6)
+            radius: height / 2
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+            border.width: Style.space(1)
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14)
+
+            Text {
+              id: destLabel
+              anchors.centerIn: parent
+              text: BackItUpStore.browseName
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Dropdown {
+            width: Style.space(130)
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            visible: BackItUpStore.destinations.length > 1
+            label: ""
+            showLabel: false
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            value: BackItUpStore.browseName
+            options: {
+              var list = []
+              for (var i = 0; i < BackItUpStore.destinations.length; i++) {
+                var d = BackItUpStore.destinations[i]
+                list.push({ value: String(d.name),
+                            label: BackItUpStore.destinationLabel(d) })
+              }
+              return list
+            }
+            onChanged: function(value) {
+              root.snapshotId = ""
+              // The roots belong to the snapshot we were looking at, which is not
+              // in this destination. Without clearing them the source picker keeps
+              // offering them while the new snapshots load, and picking one asks
+              // the CLI to list a path under no snapshot at all.
+              root.snapshotRoots = []
+              root.queue = []
+              BackItUpStore.browseDestination(value)
+              root.takeFocus()
+            }
+            onPopupOpenChanged: if (!popupOpen) root.takeFocus()
+          }
+        }
+
+        // --- snapshot timeline -------------------------------------------------
+
+        Column {
+          width: parent.width
+          spacing: Style.space(5)
+          visible: (BackItUpStore.snapshots || []).length > 0
+
+          Text {
+            text: "Backup"
+            textFormat: Text.PlainText
+            color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
+            font.letterSpacing: 0.5
           }
 
-          MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              root.openRoot(String(modelData))
-              root.takeFocus()
+          Flow {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: root.visibleChips
+
+              SnapshotChip {
+                day: root.chipDay(modelData)
+                detail: root.chipDetail(modelData)
+                selected: String(modelData.id) === root.snapshotId
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onClicked: {
+                  root.openSnapshot(String(modelData.id))
+                  root.takeFocus()
+                }
+              }
+            }
+
+            SnapshotChip {
+              visible: !root.timelineExpanded && root.hiddenChipCount > 0
+              day: "+" + root.hiddenChipCount
+              detail: "more"
+              muted: true
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: {
+                root.timelineExpanded = true
+                root.takeFocus()
+              }
             }
           }
         }
-      }
-    }
 
-    Text {
-      width: parent.width
-      visible: BackItUpStore.snapshotsBusy || BackItUpStore.snapshotsError !== ""
-      text: BackItUpStore.snapshotsBusy ? "Loading snapshots\u2026" : BackItUpStore.snapshotsError
-      textFormat: Text.PlainText
-      wrapMode: Text.WordWrap
-      color: BackItUpStore.snapshotsError !== "" ? root.urgent : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-    }
-
-    // --- breadcrumb --------------------------------------------------------
-
-    Flow {
-      width: parent.width
-      visible: root.crumbs.length > 0
-      spacing: Style.space(2)
-
-      Repeater {
-        model: root.crumbs
-
-        Row {
-          spacing: Style.space(2)
+        // A snapshot can contain several configured source directories. Stay at
+        // one source root while browsing, but make every root reachable instead
+        // of silently treating the first path as the whole snapshot.
+        Flow {
+          width: parent.width
+          visible: root.snapshotRoots.length > 1
+          spacing: Style.space(6)
 
           Text {
-            anchors.verticalCenter: parent.verticalCenter
-            visible: index > 0
-            text: "\u203A"
+            text: "Source"
+            // No anchors here, and no anchors are possible: a Flow lays out its
+            // children by top-left and ignores them, so centring is done with a
+            // matching height instead of an anchor.
+            height: Style.space(26)
+            verticalAlignment: Text.AlignVCenter
             textFormat: Text.PlainText
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
 
-          Text {
-            anchors.verticalCenter: parent.verticalCenter
-            // The last crumb is where you are, and is not a link to anywhere.
-            readonly property bool here: index === root.crumbs.length - 1
-            text: String(modelData.label)
-            textFormat: Text.PlainText
-            color: here ? root.foreground : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+          Repeater {
+            model: root.snapshotRoots
 
-            MouseArea {
-              anchors.fill: parent
-              anchors.margins: -Style.space(2)
-              enabled: !parent.here
-              hoverEnabled: true
-              cursorShape: parent.here ? Qt.ArrowCursor : Qt.PointingHandCursor
-              onClicked: {
-                root.enterDirectory(String(modelData.path))
-                root.takeFocus()
+            Rectangle {
+              readonly property bool current: String(modelData) === root.rootPath
+              implicitWidth: srcText.implicitWidth + Style.space(14)
+              implicitHeight: srcText.implicitHeight + Style.space(7)
+              radius: Style.space(6)
+              color: current ? StatusPalette.tint(root.accent, 0.13)
+                             : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+              border.width: Style.space(1)
+              border.color: current ? StatusPalette.line(root.accent, 0.5)
+                                    : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+              Text {
+                id: srcText
+                anchors.centerIn: parent
+                text: String(modelData)
+                textFormat: Text.PlainText
+                color: parent.current ? root.accent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.openRoot(String(modelData))
+                  root.takeFocus()
+                }
               }
             }
           }
         }
-      }
-    }
-
-    // --- filter ------------------------------------------------------------
-    //
-    // Shaped like a field, but not an input: a TextField would take the
-    // keyboard away from the listing, and typing here is the listing's filter
-    // (the key sink above owns the keys). The field only shows what was typed,
-    // and says what happens if nothing has been.
-    Rectangle {
-      width: parent.width
-      implicitHeight: Style.space(28)
-      radius: Style.space(6)
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-      border.width: Style.space(1)
-      border.color: root.filter !== ""
-                    ? StatusPalette.line(root.accent, 0.45)
-                    : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-
-      Row {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.leftMargin: Style.space(8)
-        anchors.rightMargin: Style.space(8)
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(6)
 
         Text {
-          id: searchGlyph
-          anchors.verticalCenter: parent.verticalCenter
-          text: BackItUpStore.iconSearch
+          width: parent.width
+          visible: BackItUpStore.snapshotsBusy || BackItUpStore.snapshotsError !== ""
+          text: BackItUpStore.snapshotsBusy ? "Loading snapshots\u2026" : BackItUpStore.snapshotsError
           textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: BackItUpStore.snapshotsError !== "" ? root.urgent : root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        // --- breadcrumb --------------------------------------------------------
+
+        Flow {
+          width: parent.width
+          visible: root.crumbs.length > 0
+          spacing: Style.space(2)
+
+          Repeater {
+            model: root.crumbs
+
+            Row {
+              spacing: Style.space(2)
+
+              Text {
+                visible: index > 0
+                text: "\u203A"
+                textFormat: Text.PlainText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                // Both crumbs are caption-sized, so the Row's own top alignment
+                // lines them up. Anchors here would break the Row's layout.
+                // The last crumb is where you are, and is not a link to anywhere.
+                readonly property bool here: index === root.crumbs.length - 1
+                text: String(modelData.label)
+                textFormat: Text.PlainText
+                color: here ? root.foreground : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+
+                MouseArea {
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(2)
+                  enabled: !parent.here
+                  hoverEnabled: true
+                  cursorShape: parent.here ? Qt.ArrowCursor : Qt.PointingHandCursor
+                  onClicked: {
+                    root.enterDirectory(String(modelData.path))
+                    root.takeFocus()
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // --- filter ------------------------------------------------------------
+        //
+        // Shaped like a field, but not an input: a TextField would take the
+        // keyboard away from the listing, and typing here is the listing's filter
+        // (the key sink above owns the keys). The field only shows what was typed,
+        // and says what happens if nothing has been.
+        Rectangle {
+          width: parent.width
+          implicitHeight: Style.space(28)
+          radius: Style.space(6)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+          border.width: Style.space(1)
+          border.color: root.filter !== ""
+                        ? StatusPalette.line(root.accent, 0.45)
+                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+          Row {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: Style.space(8)
+            anchors.rightMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(6)
+
+            Text {
+              id: searchGlyph
+              anchors.verticalCenter: parent.verticalCenter
+              text: BackItUpStore.iconSearch
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              renderType: Text.NativeRendering
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.filter !== ""
+                    ? root.filter
+                    : (BackItUpStore.currentPath !== "" ? "Filter this folder\u2026" : "")
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              width: parent.width - searchGlyph.width - parent.spacing
+              color: root.filter !== "" ? root.foreground : Qt.darker(root.foreground, 1.9)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.IBeamCursor
+            onClicked: root.takeFocus()
+          }
+        }
+
+        Text {
+          width: parent.width
+          visible: text !== ""
+          text: {
+            var total = BackItUpStore.entries.length
+            if (total === 0) return ""
+            if (root.filter !== "")
+              return root.visibleEntries.length + " of " + total + " shown"
+            return total < 12 ? "" : total + " items \u00b7 type anything to filter"
+          }
+          textFormat: Text.PlainText
+          elide: Text.ElideRight
+          color: root.filter !== "" ? root.accent : root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        // A caveat about the listing, so it belongs above it rather than
+        // inside: when this shows, the rows fill the whole region.
+        Text {
+          width: parent.width
+          visible: BackItUpStore.listTruncated
+          text: "Showing the first entries only \u2014 use the filter, or open a subfolder."
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          renderType: Text.NativeRendering
         }
+
+        // --- listing -----------------------------------------------------------
 
         Text {
-          anchors.verticalCenter: parent.verticalCenter
-          text: root.filter !== ""
-                ? root.filter
-                : (BackItUpStore.currentPath !== "" ? "Filter this folder\u2026" : "")
+          width: parent.width
+          visible: BackItUpStore.listBusy || BackItUpStore.listError !== ""
+          text: BackItUpStore.listBusy ? "Reading folder\u2026" : BackItUpStore.listError
           textFormat: Text.PlainText
-          elide: Text.ElideRight
-          width: parent.width - searchGlyph.width - parent.spacing
-          color: root.filter !== "" ? root.foreground : Qt.darker(root.foreground, 1.9)
+          wrapMode: Text.WordWrap
+          color: BackItUpStore.listError !== "" ? root.urgent : root.dim
           font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
+          font.pixelSize: Style.font.caption
         }
-      }
 
-      MouseArea {
-        anchors.fill: parent
-        cursorShape: Qt.IBeamCursor
-        onClicked: root.takeFocus()
-      }
-    }
-
-    Text {
-      width: parent.width
-      visible: text !== ""
-      text: {
-        var total = BackItUpStore.entries.length
-        if (total === 0) return ""
-        if (root.filter !== "")
-          return root.visibleEntries.length + " of " + total + " shown"
-        return total < 12 ? "" : total + " items \u00b7 type anything to filter"
-      }
-      textFormat: Text.PlainText
-      elide: Text.ElideRight
-      color: root.filter !== "" ? root.accent : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-    }
-
-    // --- listing -----------------------------------------------------------
-
-    Text {
-      width: parent.width
-      visible: BackItUpStore.listBusy || BackItUpStore.listError !== ""
-      text: BackItUpStore.listBusy ? "Reading folder\u2026" : BackItUpStore.listError
-      textFormat: Text.PlainText
-      wrapMode: Text.WordWrap
-      color: BackItUpStore.listError !== "" ? root.urgent : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
     }
 
     Rectangle {
+      id: listBox
       width: parent.width
-      height: Math.min(Style.space(300), Math.max(Style.space(60), listView.contentHeight + Style.space(4)))
-      visible: !BackItUpStore.listBusy && BackItUpStore.listError === ""
+      height: root.listHeight
+      // Always in the layout, even with nothing in it: hiding it would drop
+      // 300px out of the column and resize the panel on every folder change.
       color: "transparent"
 
       ListView {
@@ -825,129 +881,143 @@ FocusScope {
           }
         }
       }
-    }
 
-    Text {
-      width: parent.width
-      visible: BackItUpStore.listTruncated
-      text: "Showing the first entries only \u2014 use the filter, or open a subfolder."
-      textFormat: Text.PlainText
-      wrapMode: Text.WordWrap
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-    }
-
-    Text {
-      width: parent.width
-      visible: text !== ""
-      text: {
-        if (BackItUpStore.listBusy || BackItUpStore.listError !== "") return ""
-        if (BackItUpStore.entries.length === 0)
-          return root.atRoot ? "" : "This folder is empty in this snapshot."
-        if (root.visibleEntries.length === 0) return "Nothing here matches the filter."
-        return ""
-      }
-      textFormat: Text.PlainText
-      wrapMode: Text.WordWrap
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-    }
-
-    // --- footer ------------------------------------------------------------
-
-    PanelSeparator { width: parent.width }
-
-    Rectangle {
-      width: parent.width
-      implicitHeight: footerRow.implicitHeight + Style.space(9) * 2
-      radius: Style.space(8)
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-      border.width: Style.space(1)
-      border.color: StatusPalette.line(root.accent, 0.22)
-
-      Row {
-        id: footerRow
+      // What the region says when it has nothing to show. Inside the box
+      // rather than below it, so the message lands where the rows would be
+      // instead of under 300px of empty space.
+      Text {
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.leftMargin: Style.space(9)
-        anchors.rightMargin: Style.space(9)
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(8)
-
-        Column {
-          anchors.verticalCenter: parent.verticalCenter
-          width: Math.max(Style.space(60),
-                          parent.width - folderButton.width - restoreButton.width
-                          - parent.spacing * 2)
-          spacing: 0
-
-          Text {
-            width: parent.width
-            text: {
-              if (BackItUpStore.restoreBusy) return "Restoring\u2026"
-              var n = root.queue.length
-              if (n === 0) return "Nothing picked"
-              return "Restore " + n + (n === 1 ? " item" : " items")
-            }
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            font.bold: root.queue.length > 0
-          }
-
-          Text {
-            width: parent.width
-            // The dated folder is the safety property: a restore never writes
-            // over your work, it lands somewhere you then move from. The name
-            // is the CLI's to choose, so this says where rather than guessing
-            // which date it will pick.
-            text: {
-              if (BackItUpStore.restoreError !== "") return BackItUpStore.restoreError
-              if (BackItUpStore.restoreTarget !== "") return "Restored into " + BackItUpStore.restoreTarget
-              if (root.queue.length === 0) return "Tick files, or restore this folder"
-              return "into a new folder under ~/Restored/"
-            }
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            wrapMode: Text.NoWrap
-            color: BackItUpStore.restoreError !== "" ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
+        anchors.top: parent.top
+        anchors.margins: Style.space(9)
+        visible: text !== ""
+        text: {
+          if (BackItUpStore.listBusy || BackItUpStore.listError !== "") return ""
+          if (BackItUpStore.entries.length === 0)
+            return root.atRoot ? "" : "This folder is empty in this snapshot."
+          if (root.visibleEntries.length === 0) return "Nothing here matches the filter."
+          return ""
         }
-
-        PanelButton {
-          id: folderButton
-          anchors.verticalCenter: parent.verticalCenter
-          label: "This folder"
-          glyph: BackItUpStore.iconFolder
-          variant: "ghost"
-          enabled: BackItUpStore.currentPath !== "" && !BackItUpStore.restoreBusy
-          foreground: root.foreground
-          accent: root.accent
-          fontFamily: root.fontFamily
-          onClicked: root.restoreCurrentFolder()
-        }
-
-        PanelButton {
-          id: restoreButton
-          anchors.verticalCenter: parent.verticalCenter
-          label: root.queue.length === 0 ? "Restore"
-                                     : "Restore " + root.queue.length
-          glyph: BackItUpStore.iconRestore
-          variant: "primary"
-          enabled: root.queue.length > 0 && !BackItUpStore.restoreBusy
-          foreground: root.foreground
-          accent: root.accent
-          fontFamily: root.fontFamily
-          onClicked: root.restoreQueued()
-        }
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
       }
     }
+
+    // The status lines and the footer. Below the listing rather than inside it,
+    // so the footer stays reachable no matter how long the folder is.
+    Column {
+      id: lower
+      width: parent.width
+      spacing: column.spacing
+
+        // --- footer ------------------------------------------------------------
+
+        PanelSeparator { width: parent.width }
+
+        Rectangle {
+          width: parent.width
+          implicitHeight: footerRow.implicitHeight + Style.space(9) * 2
+          radius: Style.space(8)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+          border.width: Style.space(1)
+          border.color: StatusPalette.line(root.accent, 0.22)
+
+          Row {
+            id: footerRow
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: Style.space(9)
+            anchors.rightMargin: Style.space(9)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(8)
+
+            Column {
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.max(Style.space(60),
+                              parent.width - folderButton.width - restoreButton.width
+                              - parent.spacing * 2)
+              spacing: 0
+
+              Text {
+                width: parent.width
+                text: {
+                  if (BackItUpStore.restoreBusy) return "Restoring\u2026"
+                  var n = root.queue.length
+                  if (n === 0) return "Nothing picked"
+                  return "Restore " + n + (n === 1 ? " item" : " items")
+                }
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: root.queue.length > 0
+              }
+
+              Text {
+                width: parent.width
+                // The dated folder is the safety property: a restore never writes
+                // over your work, it lands somewhere you then move from. The name
+                // is the CLI's to choose, so this says where rather than guessing
+                // which date it will pick.
+                text: {
+                  if (BackItUpStore.restoreError !== "") return BackItUpStore.restoreError
+                  if (BackItUpStore.restoreTarget !== "") return "Restored into " + BackItUpStore.restoreTarget
+                  if (root.queue.length === 0) return "Tick files, or restore this folder"
+                  return "into a new folder under ~/Restored/"
+                }
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                wrapMode: Text.NoWrap
+                color: BackItUpStore.restoreError !== "" ? root.urgent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            // An icon rather than a labelled button. The mockup's footer carries
+            // one button, and a second label squeezed the "what will happen"
+            // sentence into an ellipsis -- the one line in this view that has to
+            // stay readable. The tooltip carries the meaning instead.
+            PanelActionButton {
+              id: folderButton
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: BackItUpStore.iconFolder
+              tooltipText: "Restore this folder"
+              // Dim: it is the secondary action in this row, and at full
+              // foreground the glyph reads as loud as the primary button.
+              foreground: root.dim
+              hoverColor: root.foreground
+              enabled: BackItUpStore.currentPath !== "" && !BackItUpStore.restoreBusy
+              onClicked: root.restoreCurrentFolder()
+            }
+
+            PanelButton {
+              id: restoreButton
+              anchors.verticalCenter: parent.verticalCenter
+              // Bare "Restore", not "Restore 2": the footer sentence above
+              // already carries the count, and a button that changes width with
+              // the selection moves under the pointer that is about to click it.
+              label: "Restore"
+              glyph: BackItUpStore.iconRestore
+              variant: "primary"
+              enabled: root.queue.length > 0 && !BackItUpStore.restoreBusy
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: root.restoreQueued()
+            }
+          }
+        }    }
+
+    // upper and lower are measured independently of the listing, so this never
+    // depends on the height it is used to compute.
+    readonly property real chromeHeight:
+      upper.implicitHeight + lower.implicitHeight + column.spacing * 2
+
   }
 
   ConfirmDialog {
