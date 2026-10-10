@@ -1,4 +1,5 @@
 singleton BackItUpStore 1.0 BackItUpStore.qml
+singleton StatusPalette 1.0 StatusPalette.qml
 RestoreBrowser 1.0 RestoreBrowser.qml
 ManageBrowser 1.0 ManageBrowser.qml
 RestoreRow 1.0 RestoreRow.qml

@@ -280,6 +280,35 @@ Singleton {
     return d.last_run ? d.last_run.result === "failed" : false
   }
 
+  // The semantic state of one destination: "ok", "busy", "warn", "bad", or
+  // "idle". Every view paints from this, so the bar, the hero and the card
+  // can never disagree about whether a destination is fine. A run that is
+  // happening now outranks a stale failure from before it: the newest word
+  // wins. An audit or a system snapshot that went wrong is a warning, not a
+  // failure -- the files are safe, one promise is not.
+  function destinationStatus(d) {
+    if (d.running) return "busy"
+    if (destinationFailed(d)) return "bad"
+    if (!d.last_run) return "idle"
+    if (auditHasProblems(d)) return "warn"
+    if (destinationSnapshotProblem(d)) return "warn"
+    return "ok"
+  }
+
+  // The worst state across every destination, for the single verdict at the
+  // top and the bar icon. Severity order: bad > warn > busy > ok > idle.
+  readonly property string overallStatus: {
+    if (configInvalid) return "bad"
+    if (!configured || destinations.length === 0) return "idle"
+    var rank = { idle: 0, ok: 1, busy: 2, warn: 3, bad: 4 }
+    var worst = "ok"
+    for (var i = 0; i < destinations.length; i++) {
+      var s = destinationStatus(destinations[i])
+      if (rank[s] > rank[worst]) worst = s
+    }
+    return worst
+  }
+
   // The audit's verdict on the newest backup: what comparing the disk with
   // the snapshot found. Only unreadable paths are a problem, so the message
   // says either that everything checked out or how much did not. Written by

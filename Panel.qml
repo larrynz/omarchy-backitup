@@ -73,9 +73,15 @@ Panel {
   property bool setupSeeded: false
   property bool setupEverOpened: false
 
+  // Colour is the bar's whole vocabulary -- the icon carries nothing else --
+  // so each state gets its own hue rather than borrowing the accent. Running
+  // used to paint the same red as failed, which made "busy" and "broken"
+  // indistinguishable at a glance, the one thing the bar exists to prevent.
   readonly property color barIconColor: {
-    if (BackItUpStore.running) return accent
-    if (BackItUpStore.failed) return urgent
+    var s = BackItUpStore.overallStatus
+    if (s === "busy") return StatusPalette.busy
+    if (s === "bad") return urgent
+    if (s === "warn") return StatusPalette.warn
     if (!BackItUpStore.configured) return Qt.darker(barForeground, 1.9)
     return barForeground
   }
@@ -87,7 +93,7 @@ Panel {
   // A failed backup gets a mark, not just a colour: colour alone is the one
   // signal a bar full of coloured glyphs cannot carry, and it is invisible to
   // anyone who does not distinguish red from the foreground.
-  readonly property bool showBadge: BackItUpStore.failed
+  readonly property bool showBadge: BackItUpStore.anyFailed
   readonly property int badgeSize: showBadge ? Style.space(9) : 0
   readonly property int barContentWidth:
     Style.bar.iconFont + (showBadge ? badgeSize - Style.space(3) : 0)
@@ -258,13 +264,13 @@ Panel {
           // the bar: the number would demand to be read, where the pulse only
           // says "busy" and the panel carries the detail.
           SequentialAnimation on opacity {
-            running: BackItUpStore.running
+            running: BackItUpStore.anyRunning
             loops: Animation.Infinite
             alwaysRunToEnd: true
             NumberAnimation { from: 1.0; to: 0.45; duration: 900; easing.type: Easing.InOutQuad }
             NumberAnimation { from: 0.45; to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
           }
-          onVisibleChanged: if (!BackItUpStore.running) opacity = 1.0
+          onVisibleChanged: if (!BackItUpStore.anyRunning) opacity = 1.0
         }
 
         // Exclamation badge, pinned to the glyph's top right.
