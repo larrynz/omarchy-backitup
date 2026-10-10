@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BackIt Up — UI/UX Redesign Mockup</title>
+<style>
+/* ============================================================================
+   BackIt Up — redesign mockup
+   Palette and typography are the real Akane theme tokens, so what you see here
+   is what the QML will look like on this machine.
+   ========================================================================= */
+
+:root{
+  /* --- Akane palette (colors.toml) --- */
+  --bg:        #12101c;
+  --bg-dark:   #0c0a14;
+  --bg-darker: #08070e;
+  --bg-light:  #221c2c;
+  --fg:        #f0c4a8;
+  --fg-bright: #f7e0cc;
+  --fg-light:  #f3d0b8;
+  --muted:     #6d5a68;
+  --accent:    #e15a48;
+  --red:       #d6453d;
+  --bright-red:#f06a58;
+  --yellow:    #f0b45a;
+  --bright-yel:#f6cc7a;
+  --orange:    #e87a42;
+  --green:     #7e9a6a;
+  --bright-grn:#9ab57e;
+  --cyan:      #4a9bb0;
+  --bright-cyn:#7ec4d2;
+  --blue:      #5b7fa8;
+  --magenta:   #c45c78;
+
+  /* --- semantic roles (the improvement: stop overloading accent red) --- */
+  --ok:    #9ab57e;
+  --warn:  #f0b45a;
+  --bad:   #f06a58;
+  --busy:  #7ec4d2;
+  --idle:  #6d5a68;
+
+  /* --- surfaces --- */
+  --card:      rgba(240,196,168,.045);
+  --card-hi:   rgba(240,196,168,.075);
+  --stroke:    rgba(240,196,168,.14);
+  --stroke-hi: rgba(240,196,168,.28);
+  --hair:      rgba(240,196,168,.10);
+
+  --radius: 10px;
+  --radius-sm: 7px;
+  --mono: "JetBrainsMono Nerd Font","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:
+    radial-gradient(1200px 700px at 85% -10%, rgba(225,90,72,.10), transparent 60%),
+    radial-gradient(900px 600px at 10% 110%, rgba(74,155,176,.08), transparent 55%),
+    var(--bg-darker);
+  color:var(--fg);
+  font-family:var(--mono);
+  font-size:14px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent)}
+.wrap{max-width:1180px;margin:0 auto;padding:56px 28px 120px}
+
+/* ---------------------------------------------------------------- doc head */
+.eyebrow{
+  font-size:11px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 14px
+}
+h1{
+  font-size:38px;line-height:1.15;margin:0 0 14px;color:var(--fg-bright);
+  font-weight:600;letter-spacing:-.01em
+}
+.lede{max-width:760px;font-size:15px;color:var(--fg);opacity:.82;margin:0 0 10px}
+.lede.dim{color:var(--muted);font-size:13px;opacity:1}
+.rule{height:1px;background:linear-gradient(90deg,var(--accent),transparent);margin:44px 0 0;border:0}
+
+/* ---------------------------------------------------------------- sections */
+section{margin-top:64px;scroll-margin-top:24px}
+.sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:8px}
+.sec-num{
+  font-size:12px;color:var(--accent);border:1px solid rgba(225,90,72,.4);
+  border-radius:999px;padding:2px 9px;letter-spacing:.05em;flex:none
+}
+h2{font-size:22px;margin:0;color:var(--fg-bright);font-weight:600}
+h3{font-size:15px;margin:26px 0 8px;color:var(--fg-bright);font-weight:600}
+p{margin:8px 0}
+.sub{color:var(--muted);font-size:12.5px;margin:8px 0 26px;max-width:820px}
+
+/* ---------------------------------------------------------------- tokens */
+.tokens{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:6px}
+.sw{border:1px solid var(--stroke);border-radius:var(--radius-sm);overflow:hidden;background:var(--card)}
+.sw .chip{height:44px;display:flex;align-items:flex-end;padding:6px}
+.sw .meta{padding:7px 9px;font-size:10.5px;line-height:1.45}
+.sw .meta b{color:var(--fg-bright);font-weight:600;display:block;font-size:11px}
+.sw .meta span{color:var(--muted)}
+.role-note{margin-top:16px;border-left:2px solid var(--accent);padding:2px 0 2px 14px;color:var(--fg);opacity:.85;font-size:12.5px}
+
+/* ---------------------------------------------------------------- spec grid */
+.spec{
+  display:grid;grid-template-columns:minmax(320px,440px) 1fr;gap:36px;
+  align-items:start;margin-top:34px
+}
+@media(max-width:900px){.spec{grid-template-columns:1fr;gap:20px}}
+
+.canvas{
+  position:relative;border-radius:14px;padding:26px;
+  background:
+    radial-gradient(120% 90% at 20% 0%, #f0b45a 0%, #e87a42 26%, #c45c78 52%, #3a2440 74%, var(--bg-darker) 100%);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.05);
+  min-height:120px;display:flex;justify-content:center
+}
+.canvas.center{justify-content:center}
+.canvas.dark{
+  background:
+    radial-gradient(140% 100% at 50% 0%, #2a2236 0%, #17131f 45%, var(--bg-darker) 100%);
+}
+
+/* ---------------------------------------------------------------- the panel */
+.panel{
+  width:100%;max-width:360px;background:var(--bg);
+  border:1px solid var(--stroke);border-radius:var(--radius);
+  padding:14px;color:var(--fg);
+  box-shadow:0 18px 50px rgba(0,0,0,.55), 0 2px 0 rgba(255,255,255,.03) inset;
+  display:flex;flex-direction:column;gap:12px;
+}
+.panel.wide{max-width:440px}
+.p-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.p-title{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg);opacity:.55}
+.p-head-actions{display:flex;gap:3px}
+.iconbtn{
+  width:26px;height:26px;display:grid;place-items:center;border-radius:6px;
+  color:var(--muted);border:1px solid transparent;cursor:pointer
+}
+.iconbtn:hover{background:var(--card);color:var(--fg);border-color:var(--stroke)}
+.ic{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ic.sm{width:13px;height:13px}
+.ic.lg{width:22px;height:22px}
+
+/* ---------------------------------------------------------------- hero */
+.hero{display:flex;gap:13px;align-items:flex-start;padding:14px;border-radius:var(--radius-sm);
+  background:var(--card);border:1px solid var(--stroke);position:relative;overflow:hidden}
+.hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--idle)}
+.hero.ok::before{background:var(--ok)}
+.hero.warn::before{background:var(--warn)}
+.hero.bad::before{background:var(--bad)}
+.hero.busy::before{background:var(--busy)}
+
+.hero-badge{
+  width:40px;height:40px;border-radius:50%;flex:none;display:grid;place-items:center;
+  background:rgba(109,90,104,.18);color:var(--idle);border:1px solid rgba(109,90,104,.35)
+}
+.hero.ok   .hero-badge{background:rgba(154,181,126,.14);color:var(--ok);border-color:rgba(154,181,126,.4)}
+.hero.warn .hero-badge{background:rgba(240,180,90,.13);color:var(--warn);border-color:rgba(240,180,90,.4)}
+.hero.bad  .hero-badge{background:rgba(240,106,88,.13);color:var(--bad);border-color:rgba(240,106,88,.42)}
+.hero.busy .hero-badge{background:rgba(126,196,210,.12);color:var(--busy);border-color:rgba(126,196,210,.4)}
+.hero-main{min-width:0;flex:1}
+.hero-verdict{font-size:16px;font-weight:600;color:var(--fg-bright);line-height:1.25}
+.hero.ok   .hero-verdict{color:var(--ok)}
+.hero.warn .hero-verdict{color:var(--warn)}
+.hero.bad  .hero-verdict{color:var(--bad)}
+.hero-sub{font-size:12.5px;margin-top:2px}
+.hero-sub b{color:var(--fg-bright);font-weight:600}
+.hero-meta{font-size:11px;color:var(--muted);margin-top:3px}
+
+/* progress ring */
+.ringwrap{position:relative;width:44px;height:44px;flex:none}
+.ring{width:44px;height:44px;transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:4;stroke-linecap:round}
+.ring .bg{stroke:rgba(240,196,168,.12)}
+.ring .fg{stroke:var(--busy);stroke-dasharray:119.4;stroke-dashoffset:62.1}
+.ring-pct{position:absolute;inset:0;display:grid;place-items:center;font-size:10.5px;font-weight:600;color:var(--busy)}
+
+/* phase steps */
+.phases{display:flex;gap:0;margin-top:11px;align-items:center}
+.phase{flex:1;display:flex;flex-direction:column;gap:5px}
+.phase .bar{height:3px;border-radius:2px;background:rgba(240,196,168,.13)}
+.phase.done .bar{background:var(--busy)}
+.phase.now .bar{background:var(--busy);box-shadow:0 0 8px rgba(126,196,210,.5)}
+.phase .lab{font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.phase.done .lab,.phase.now .lab{color:var(--fg)}
+.phase + .phase{margin-left:4px}
+.progress-note{font-size:11.5px;color:var(--fg);opacity:.75;margin-top:10px}
+.progress-note .em{color:var(--fg-bright)}
+
+/* ---------------------------------------------------------------- metrics */
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--hair);
+  border:1px solid var(--stroke);border-radius:var(--radius-sm);overflow:hidden}
+.metric{background:var(--bg);padding:9px 10px;display:flex;flex-direction:column;gap:1px}
+.metric .m-val{font-size:13.5px;font-weight:600;color:var(--fg-bright)}
+.metric .m-lab{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+/* ---------------------------------------------------------------- dest cards */
+.dest{border:1px solid var(--stroke);border-radius:var(--radius-sm);background:var(--card);overflow:hidden}
+.dest-top{display:flex;align-items:center;gap:10px;padding:10px 11px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--idle)}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(154,181,126,.14)}
+.dot.warn{background:var(--warn);box-shadow:0 0 0 3px rgba(240,180,90,.14)}
+.dot.bad{background:var(--bad);box-shadow:0 0 0 3px rgba(240,106,88,.15)}
+.dot.busy{background:var(--busy);box-shadow:0 0 0 3px rgba(126,196,210,.15)}
+.dest-name{font-size:12.5px;font-weight:600;color:var(--fg-bright);flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:999px;
+  border:1px solid var(--stroke);color:var(--muted);flex:none}
+.pill.ok{color:var(--ok);border-color:rgba(154,181,126,.4);background:rgba(154,181,126,.08)}
+.pill.warn{color:var(--warn);border-color:rgba(240,180,90,.4);background:rgba(240,180,90,.08)}
+.pill.bad{color:var(--bad);border-color:rgba(240,106,88,.42);background:rgba(240,106,88,.08)}
+.pill.busy{color:var(--busy);border-color:rgba(126,196,210,.4);background:rgba(126,196,210,.08)}
+.dest-meta{display:flex;gap:8px;flex-wrap:wrap;padding:0 11px 10px 29px;font-size:11px;color:var(--muted)}
+.dest-meta .k{color:var(--fg);opacity:.8}
+.dest-health{display:flex;gap:6px;flex-wrap:wrap;padding:8px 11px;border-top:1px solid var(--hair);
+  background:rgba(0,0,0,.14)}
+.tagcheck{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--muted)}
+.tagcheck.ok{color:var(--ok)}
+.tagcheck.bad{color:var(--bad)}
+.tagcheck .ic{width:12px;height:12px}
+
+/* ---------------------------------------------------------------- buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  height:36px;padding:0 14px;border-radius:8px;font-family:var(--mono);font-size:12.5px;
+  cursor:pointer;border:1px solid var(--stroke);background:var(--card);color:var(--fg);
+  transition:background .12s,border-color .12s,transform .06s}
+.btn:hover{background:var(--card-hi);border-color:var(--stroke-hi)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a0f10;font-weight:600}
+.btn.primary:hover{background:#ef6a57;border-color:#ef6a57}
+.btn.danger{color:var(--bad);border-color:rgba(240,106,88,.4);background:rgba(240,106,88,.07)}
+.btn.danger:hover{background:rgba(240,106,88,.14)}
+.btn.ghost{background:transparent}
+.btn.block{width:100%}
+.btn .ic{width:15px;height:15px}
+.btnrow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.btnrow.two{grid-template-columns:1fr 1fr}
+
+/* ---------------------------------------------------------------- rows / list */
+.list{border:1px solid var(--stroke);border-radius:var(--radius-sm);overflow:hidden;background:var(--card)}
+.row{display:flex;align-items:center;gap:10px;padding:9px 11px;border-top:1px solid var(--hair);font-size:12.5px}
+.row:first-child{border-top:0}
+.row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .size{font-size:11px;color:var(--muted);flex:none}
+.row .ic{color:var(--muted)}
+.row .ic.folder{color:var(--warn)}
+.row.hot{background:var(--card-hi)}
+.row.sub{opacity:.6}
+.row .del{color:var(--muted);width:26px;height:26px;display:grid;place-items:center;border-radius:6px}
+.row .del:hover{color:var(--bad);background:rgba(240,106,88,.1)}
+.latest{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);
+  border:1px solid rgba(225,90,72,.4);border-radius:999px;padding:1px 6px}
+
+/* ---------------------------------------------------------------- breadcrumb / chips */
+.crumbs{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted);
+  overflow:hidden;white-space:nowrap}
+.crumbs .cr{color:var(--fg);opacity:.85}
+.crumbs .cr.here{color:var(--fg-bright);font-weight:600;opacity:1}
+.crumbs .sep{opacity:.4}
+
+.chips{display:flex;gap:7px;overflow:hidden;padding-bottom:2px}
+.chip-snap{flex:none;border:1px solid var(--stroke);border-radius:8px;padding:7px 10px;background:var(--card);
+  display:flex;flex-direction:column;gap:1px;min-width:96px}
+.chip-snap .d{font-size:11.5px;font-weight:600;color:var(--fg-bright)}
+.chip-snap .s{font-size:9.5px;color:var(--muted)}
+.chip-snap.sel{border-color:var(--accent);background:rgba(225,90,72,.1)}
+.chip-snap.sel .d{color:var(--accent)}
+
+/* search field */
+.field{display:flex;align-items:center;gap:8px;height:34px;padding:0 11px;border:1px solid var(--stroke);
+  border-radius:8px;background:var(--card);color:var(--fg);font-size:12px}
+.field .ic{color:var(--muted)}
+.field .ph{color:var(--muted);flex:1}
+.field.focus{border-color:var(--accent);background:rgba(225,90,72,.05)}
+.caret{width:1.5px;height:15px;background:var(--accent);margin-left:-2px}
+
+/* path input w/ inline */
+.input{height:34px;display:flex;align-items:center;padding:0 11px;border:1px solid var(--stroke);
+  border-radius:8px;background:var(--card);font-size:12px;color:var(--fg-bright)}
+.input.ph{color:var(--muted)}
+
+/* footer bar */
+.footbar{display:flex;align-items:center;gap:10px;padding:10px 11px;border-radius:var(--radius-sm);
+  background:var(--card-hi);border:1px solid var(--stroke)}
+.footbar .fb-text{flex:1;font-size:11px;color:var(--muted)}
+.footbar .fb-text b{color:var(--fg-bright);display:block;font-size:12px}
+
+/* modal */
+.modal-scrim{position:absolute;inset:0;background:rgba(8,7,14,.72);border-radius:var(--radius);
+  display:grid;place-items:center;padding:18px;backdrop-filter:blur(1.5px)}
+.modal{width:100%;max-width:300px;border:1px solid var(--stroke-hi);border-radius:var(--radius-sm);
+  background:var(--bg-light);padding:16px;box-shadow:0 20px 50px rgba(0,0,0,.6)}
+.modal h4{margin:0 0 8px;font-size:14px;color:var(--fg-bright)}
+.modal p{margin:0 0 14px;font-size:11.5px;color:var(--fg);opacity:.85}
+.modal .acts{display:flex;gap:8px;justify-content:flex-end}
+
+/* ---------------------------------------------------------------- stepper */
+.stepper{display:flex;align-items:center;gap:0;margin-bottom:2px}
+.step{display:flex;align-items:center;gap:6px;flex:none}
+.step .n{width:20px;height:20px;border-radius:50%;border:1px solid var(--stroke);display:grid;
+  place-items:center;font-size:10px;color:var(--muted)}
+.step.done .n{background:rgba(154,181,126,.15);border-color:rgba(154,181,126,.5);color:var(--ok)}
+.step.now .n{background:var(--accent);border-color:var(--accent);color:#1a0f10;font-weight:700}
+.step .t{font-size:10px;color:var(--muted)}
+.step.now .t{color:var(--fg-bright)}
+.stepline{flex:1;height:1px;background:var(--stroke);margin:0 6px}
+.stepline.done{background:rgba(154,181,126,.5)}
+
+.sec-label{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.src{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--stroke);
+  border-radius:7px;background:var(--card);font-size:11.5px}
+.src .ic{color:var(--warn)}
+.src .p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-bright)}
+.src .x{color:var(--muted)}
+.src .x:hover{color:var(--bad)}
+
+/* segmented control */
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--stroke);
+  border:1px solid var(--stroke);border-radius:8px;overflow:hidden}
+.seg .opt{background:var(--bg);text-align:center;font-size:11px;padding:8px 4px;color:var(--muted)}
+.seg .opt.on{background:rgba(225,90,72,.14);color:var(--accent);font-weight:600}
+.seg.two{grid-template-columns:repeat(2,1fr)}
+
+/* retention viz */
+.retention{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+.ret{border:1px solid var(--stroke);border-radius:7px;padding:8px;background:var(--card);text-align:center}
+.ret .num{font-size:15px;font-weight:600;color:var(--fg-bright)}
+.ret .lab{font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+
+/* review list */
+.review{border:1px solid var(--stroke);border-radius:8px;overflow:hidden;background:var(--card)}
+.review .rr{display:flex;gap:10px;padding:8px 11px;border-top:1px solid var(--hair);font-size:11.5px}
+.review .rr:first-child{border-top:0}
+.review .rk{color:var(--muted);width:84px;flex:none}
+.review .rv{color:var(--fg-bright);flex:1;min-width:0;word-break:break-word}
+
+/* ---------------------------------------------------------------- notes column */
+.notes{padding-top:4px}
+.tag{display:inline-block;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--accent);border:1px solid rgba(225,90,72,.35);border-radius:999px;padding:2px 9px;margin-bottom:12px}
+.notes h3{margin:22px 0 8px;font-size:13px;color:var(--fg-bright);letter-spacing:.02em}
+.notes h3:first-of-type{margin-top:4px}
+.notes ul{margin:8px 0;padding-left:0;list-style:none}
+.notes li{position:relative;padding-left:18px;margin:7px 0;font-size:12.5px;color:var(--fg);opacity:.86}
+.notes li::before{content:"";position:absolute;left:3px;top:9px;width:5px;height:5px;border-radius:50%;
+  background:var(--accent);opacity:.75}
+.notes li b{color:var(--fg-bright);font-weight:600}
+.notes li .warn{color:var(--warn)}
+.gapbox{border:1px solid rgba(240,180,90,.3);background:rgba(240,180,90,.05);border-radius:8px;
+  padding:11px 13px;font-size:12px;margin-top:14px}
+.gapbox b{color:var(--warn)}
+
+/* ---------------------------------------------------------------- before/after */
+.ba{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:26px}
+@media(max-width:900px){.ba{grid-template-columns:1fr}}
+.ba-col .ba-cap{display:flex;align-items:center;gap:9px;margin-bottom:12px;font-size:12px}
+.ba-col .ba-cap .k{font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px}
+.k.old{color:var(--muted);border:1px solid var(--stroke)}
+.k.new{color:var(--ok);border:1px solid rgba(154,181,126,.45);background:rgba(154,181,126,.08)}
+.flat{color:var(--dim)} .flat .line{color:var(--muted);font-size:11px}
+
+/* ---------------------------------------------------------------- bar strip */
+.bar-mock{display:flex;align-items:center;justify-content:flex-end;gap:0;
+  background:var(--bg);border:1px solid var(--stroke);border-radius:8px;padding:0 8px;height:34px}
+.bar-mock .spacer{flex:1}
+.bar-item{width:32px;height:34px;display:grid;place-items:center;color:var(--fg);position:relative}
+.bar-item .ic{width:15px;height:15px}
+.bar-item .badge{position:absolute;top:4px;right:6px;width:8px;height:8px;border-radius:50%;
+  background:var(--bad);color:var(--bg);font-size:8px;display:grid;place-items:center;font-weight:700}
+.bar-item.busy .ic{color:var(--busy);animation:pulse 1.6s ease-in-out infinite}
+.bar-item.bad .ic{color:var(--bad)}
+.bar-item.idle .ic{color:var(--idle)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.bar-states{display:flex;flex-direction:column;gap:14px}
+.bar-state{display:grid;grid-template-columns:120px 200px 1fr;gap:16px;align-items:center}
+@media(max-width:760px){.bar-state{grid-template-columns:1fr;gap:8px}}
+.bar-state .sl{font-size:11.5px;color:var(--fg-bright)}
+.bar-state .sl span{display:block;color:var(--muted);font-size:10.5px}
+.bar-state .desc{font-size:11.5px;color:var(--muted)}
+.tooltip{position:absolute;top:36px;right:0;background:var(--bg);border:1px solid var(--stroke-hi);
+  border-radius:7px;padding:6px 10px;font-size:10.5px;color:var(--fg);white-space:nowrap;z-index:5;
+  box-shadow:0 10px 26px rgba(0,0,0,.5)}
+.tipwrap{position:relative}
+
+/* ---------------------------------------------------------------- misc */
+.kbd{display:inline-block;border:1px solid var(--stroke);border-bottom-width:2px;border-radius:5px;
+  padding:0 5px;font-size:10.5px;color:var(--fg);background:var(--card)}
+.note{font-size:11.5px;color:var(--muted);font-style:normal}
+.proposed{font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--warn);
+  border:1px dashed rgba(240,180,90,.5);border-radius:999px;padding:0 6px;margin-left:6px}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}
+.toc a{font-size:11.5px;text-decoration:none;border:1px solid var(--stroke);border-radius:999px;
+  padding:5px 12px;color:var(--fg);opacity:.8}
+.toc a:hover{opacity:1;border-color:var(--stroke-hi);background:var(--card)}
+.phases .phase:nth-child(1){display:flex}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.footer{margin-top:80px;padding-top:22px;border-top:1px solid var(--hair);color:var(--muted);font-size:11.5px}
+</style>
+</head>
+<body>
+
+<!-- ===================== icon sprite ===================== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.4-3 8.2-7 10-4-1.8-7-5.6-7-10V6z"/><path d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 4v4.5h-4.5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 6.5A1.5 1.5 0 0 1 5 5h4l2 2.5h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 18.5H5A1.5 1.5 0 0 1 3.5 17z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.5 3.5h7l4.5 4.5v12a1 1 0 0 1-1 1H6.5a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1z"/><path d="M13.5 3.5V8H18"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9.5 5.5l6.5 6.5-6.5 6.5"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M5.5 9.5l6.5 6.5 6.5-6.5"/></symbol>
+  <symbol id="i-arrow-l" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="M11 6l-6 6 6 6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10"/><path d="M18 7h2"/><circle cx="16" cy="7" r="1.8"/><path d="M4 12h4"/><path d="M12 12h8"/><circle cx="10" cy="12" r="1.8"/><path d="M4 17h10"/><path d="M18 17h2"/><circle cx="16" cy="17" r="1.8"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5l10 6.5-10 6.5z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15"/><path d="M9.5 7V5.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V7"/><path d="M6.5 7l.8 11.5a1 1 0 0 0 1 1h7.4a1 1 0 0 0 1-1L17.5 7"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4.5l8.5 15h-17z"/><path d="M12 10v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11"/><path d="M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13"/><path d="M5.5 12h13"/></symbol>
+  <symbol id="i-drive" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="6" rx="1.4"/><rect x="3.5" y="13" width="17" height="6" rx="1.4"/><path d="M7 8h.01"/><path d="M7 16h.01"/></symbol>
+  <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="6.5" rx="7" ry="2.8"/><path d="M5 6.5v11c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-11"/><path d="M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="9" rx="1.6"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="1.8"/><path d="M7.5 10l3 2.5-3 2.5"/><path d="M13 15h4"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14" rx="1.6"/><path d="M4 10h16"/><path d="M8 3.5v4"/><path d="M16 3.5v4"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><path d="M12 7.8h.01"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6.5h12"/><path d="M8 12h12"/><path d="M8 17.5h12"/><path d="M4 6.5h.01"/><path d="M4 12h.01"/><path d="M4 17.5h.01"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.5V15"/><path d="M7 10.5l5 5 5-5"/><path d="M5 19.5h14"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="M12 3.2l7.5 3.8v10L12 20.8 4.5 17V7z"/><path d="M4.5 7L12 10.8 19.5 7"/><path d="M12 10.8V20.8"/></symbol>
+  <symbol id="i-warn-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.4-3 8.2-7 10-4-1.8-7-5.6-7-10V6z"/><path d="M12 9v4"/><path d="M12 16h.01"/></symbol>
+</svg>
+
+<div class="wrap">
+
+  <!-- ============================== HEAD ============================== -->
+  <div class="eyebrow">UI / UX Redesign · Mockup v1</div>
+  <h1>BackIt Up</h1>
+  <p class="lede">
+    A restic backup widget for the Omarchy bar. Today it is a narrow column of
+    same-weight monospace rows: the interface works, but it makes you read
+    every line to find the one that matters. This redesign keeps the popup
+    small and the monospace soul, and changes what your eye lands on first.
+  </p>
+  <p class="lede dim">
+    Rendered with the live Akane palette (<code>colors.toml</code>) and JetBrainsMono Nerd Font,
+    using the shell's real spacing and type scale. The panel is 360&nbsp;px
+    (440&nbsp;px for browsers), exactly the constraint the real widget lives in.
+  </p>
+
+  <div class="toc">
+    <a href="#idea">The idea</a>
+    <a href="#tokens">Tokens</a>
+    <a href="#overview">Overview</a>
+    <a href="#states">States</a>
+    <a href="#restore">Restore</a>
+    <a href="#manage">Manage</a>
+    <a href="#setup">Setup</a>
+    <a href="#bar">Bar</a>
+    <a href="#ba">Before / after</a>
+    <a href="#plan">Build plan</a>
+  </div>
+
+  <hr class="rule">
+
+  <!-- ============================== THE IDEA ============================== -->
+  <section id="idea">
+    <div class="sec-head"><span class="sec-num">01</span><h2>The idea</h2></div>
+    <p class="sub">
+      Five rules govern every screen below. They are the answer to "it works
+      but it's flat" — flat is a hierarchy problem, not a colour problem.
+    </p>
+
+    <div class="spec" style="grid-template-columns:1fr">
+      <div class="notes" style="max-width:900px">
+        <h3>1 · Answer one question first</h3>
+        <ul>
+          <li>Every open starts with a single plain-language verdict: <b>Protected</b>,
+              <b>Backing up</b>, <b>Backup failed</b>, <b>Never backed up</b>.
+              The current panel opens on the word "Backups" — a noun, not a status.</li>
+        </ul>
+        <h3>2 · Stop overloading red</h3>
+        <ul>
+          <li>Running currently uses the theme accent (<code>#e15a48</code>) and failure uses
+              urgent (<code>#d6453d</code>). On Akane those are two reds. The redesign gives
+              each state its own hue: <span style="color:var(--ok)">green</span> healthy,
+              <span style="color:var(--busy)">cyan</span> working,
+              <span style="color:var(--warn)">amber</span> warning,
+              <span style="color:var(--bad)">red</span> failed, grey never-run.</li>
+        </ul>
+        <h3>3 · Shape carries meaning</h3>
+        <ul>
+          <li>Status is a coloured dot, a pill, or a badge — not just tinted text, so it
+              survives a colourblind eye and a bar full of coloured glyphs.</li>
+        </ul>
+        <h3>4 · Progressive disclosure inside 360 px</h3>
+        <ul>
+          <li>The first screen shows the health summary, a compact per-destination line,
+              and three actions. Audit verdicts, snapshot detail and retention move one
+              tap deeper instead of stacking as dim caption text.</li>
+        </ul>
+        <h3>5 · One header grammar</h3>
+        <ul>
+          <li>Overview, Restore, Manage and Setup all share the same header: back arrow,
+              title, context control on the right. Today each view invents its own.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== TOKENS ============================== -->
+  <section id="tokens">
+    <div class="sec-head"><span class="sec-num">02</span><h2>Semantic tokens</h2></div>
+    <p class="sub">
+      Base palette is unchanged — these are roles layered on top of it, the
+      part QML will expose through <code>Color</code> / <code>Style</code>.
+    </p>
+
+    <div class="tokens">
+      <div class="sw"><div class="chip" style="background:var(--ok)"></div><div class="meta"><b>Healthy</b><span>#9ab57e · protected</span></div></div>
+      <div class="sw"><div class="chip" style="background:var(--busy)"></div><div class="meta"><b>Working</b><span>#7ec4d2 · in progress</span></div></div>
+      <div class="sw"><div class="chip" style="background:var(--warn)"></div><div class="meta"><b>Warning</b><span>#f0b45a · stale / partial</span></div></div>
+      <div class="sw"><div class="chip" style="background:var(--bad)"></div><div class="meta"><b>Failed</b><span>#f06a58 · run failed</span></div></div>
+      <div class="sw"><div class="chip" style="background:var(--idle)"></div><div class="meta"><b>Unknown</b><span>#6d5a68 · never / unset</span></div></div>
+      <div class="sw"><div class="chip" style="background:var(--accent)"></div><div class="meta"><b>Accent</b><span>#e15a48 · primary action</span></div></div>
+    </div>
+
+    <div class="role-note">
+      <b>Reserved meaning:</b> the accent red now marks <em>the primary action</em> and
+      the selected snapshot only. It is never used for "a backup is running"
+      and never as a decorative tint, so red-means-something-again.
+    </div>
+
+    <div class="grid2" style="margin-top:22px">
+      <div class="list">
+        <div class="row"><span class="name">Type scale</span><span class="size">caption 10 · body 12 · title 14 · heading 17</span></div>
+        <div class="row"><span class="name">Spacing</span><span class="size">Style.space() · 2 / 4 / 6 / 8 / 12</span></div>
+        <div class="row"><span class="name">Radius</span><span class="size">panel 10 · card 7 · control 8</span></div>
+        <div class="row"><span class="name">Row height</span><span class="size">actions 36 · list 30 · dest 44</span></div>
+      </div>
+      <div class="list">
+        <div class="row"><span class="name">Panel width</span><span class="size">overview 360 · browser 440</span></div>
+        <div class="row"><span class="name">Panel padding</span><span class="size">14 px</span></div>
+        <div class="row"><span class="name">Icon size</span><span class="size">13 / 16 / 22</span></div>
+        <div class="row"><span class="name">Motion</span><span class="size">120 ms controls · 300 ms progress</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== OVERVIEW ============================== -->
+  <section id="overview">
+    <div class="sec-head"><span class="sec-num">03</span><h2>Overview — the main panel</h2></div>
+    <p class="sub">
+      The hero answers "am I safe?", the destination card answers "how much and
+      how old?", and the actions are grouped by intent and weight.
+    </p>
+
+    <div class="spec">
+      <div class="canvas">
+        <div class="panel">
+          <div class="p-head">
+            <span class="p-title">BackIt Up</span>
+            <div class="p-head-actions">
+              <div class="iconbtn" title="Settings"><svg class="ic"><use href="#i-sliders"/></svg></div>
+            </div>
+          </div>
+
+          <!-- HERO -->
+          <div class="hero ok">
+            <div class="hero-badge"><svg class="ic lg"><use href="#i-shield"/></svg></div>
+            <div class="hero-main">
+              <div class="hero-verdict">Protected</div>
+              <div class="hero-sub">Last backup <b>6 hours ago</b></div>
+              <div class="hero-meta">Today, 03:00 · daily at 03:00</div>
+            </div>
+          </div>
+
+          <!-- DESTINATION -->
+          <div class="dest">
+            <div class="dest-top">
+              <span class="dot ok"></span>
+              <span class="dest-name">backup-drive</span>
+              <span class="pill ok">Healthy</span>
+            </div>
+            <div class="dest-meta">
+              <span><span class="k">43.7 GB</span> stored</span>
+              <span>·</span>
+              <span><span class="k">2</span> snapshots</span>
+              <span>·</span>
+              <span><span class="k">11.2 MB</span> added</span>
+            </div>
+            <div class="dest-health">
+              <span class="tagcheck ok"><svg class="ic"><use href="#i-check"/></svg> Audit clean</span>
+              <span class="tagcheck ok"><svg class="ic"><use href="#i-check"/></svg> System snapshot taken</span>
+            </div>
+          </div>
+
+          <!-- ACTIONS -->
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <button class="btn primary block"><svg class="ic"><use href="#i-play"/></svg> Back Up Now</button>
+            <div class="btnrow two">
+              <button class="btn"><svg class="ic"><use href="#i-download"/></svg> Restore</button>
+              <button class="btn"><svg class="ic"><use href="#i-list"/></svg> Manage</button>
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;padding-top:2px;border-top:1px solid var(--hair)">
+            <button class="btn ghost" style="height:28px;padding:0 4px;font-size:11.5px;color:var(--muted)"><svg class="ic sm"><use href="#i-sliders"/></svg> Edit configuration</button>
+            <button class="btn ghost" style="height:28px;padding:0 8px;font-size:11.5px;color:var(--muted)">Log <svg class="ic sm"><use href="#i-chev-r"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">Overview · protected</span>
+        <h3>What changed</h3>
+        <ul>
+          <li><b>Hero verdict.</b> "Backups" becomes "Protected" with a shield and the
+              age of the newest copy as the second line. Glanceable in under a second.</li>
+          <li><b>Status is a shape.</b> Dot → coloured, pill → word. The audit and
+              snapshot verdicts collapse from two dim lines into two check tags that
+              only shout when they are not green.</li>
+          <li><b>Metrics get a rhythm.</b> Size, snapshot count and last delta sit in a
+              single wrapped line with the numbers in the foreground colour — not one
+              grey sentence.</li>
+          <li><b>Actions are weighted.</b> One filled primary ("Back Up Now"), two
+              equal secondaries ("Restore", "Manage"), and configuration demoted to a
+              quiet footer.</li>
+          <li><b>Schedule is visible.</b> "daily at 03:00" answers "is this thing even
+              on?" without opening the config.</li>
+        </ul>
+        <div class="gapbox">
+          <b>Proposed data.</b> The schedule line and "next run" read from the
+          destination's existing <code>schedule</code>; showing the computed next fire
+          time would need one extra field from <code>status --json</code>. Low effort,
+          high reassurance.
+        </div>
+      </div>
+    </div>
+
+    <!-- MULTI DESTINATION -->
+    <div class="spec">
+      <div class="canvas dark">
+        <div class="panel">
+          <div class="p-head">
+            <span class="p-title">BackIt Up</span>
+            <div class="p-head-actions"><div class="iconbtn"><svg class="ic"><use href="#i-sliders"/></svg></div></div>
+          </div>
+          <div class="hero warn" style="padding:11px 13px">
+            <div class="hero-badge" style="width:34px;height:34px"><svg class="ic"><use href="#i-warn-shield"/></svg></div>
+            <div class="hero-main">
+              <div class="hero-verdict" style="font-size:14.5px">1 of 3 needs attention</div>
+              <div class="hero-sub" style="font-size:11.5px">Synology NAS failed · last good 2 days ago</div>
+            </div>
+          </div>
+
+          <div class="dest">
+            <div class="dest-top"><span class="dot bad"></span><span class="dest-name">Synology NAS</span><span class="pill bad">Failed</span></div>
+            <div class="dest-meta"><span><span class="k">185 GB</span> · 26 snapshots · 2 days ago</span></div>
+          </div>
+          <div class="dest">
+            <div class="dest-top"><span class="dot ok"></span><span class="dest-name">Drive in my bag</span><span class="pill ok">Healthy</span></div>
+            <div class="dest-meta"><span><span class="k">185 GB</span> · 9 snapshots · 18 Aug, 12:48</span></div>
+          </div>
+          <div class="dest">
+            <div class="dest-top"><span class="dot ok"></span><span class="dest-name">Offsite</span><span class="pill ok">Healthy</span></div>
+            <div class="dest-meta"><span><span class="k">189 GB</span> · 14 snapshots · 300 MB added</span></div>
+          </div>
+
+          <button class="btn primary block"><svg class="ic"><use href="#i-play"/></svg> Back Up All</button>
+          <div class="btnrow two">
+            <button class="btn"><svg class="ic"><use href="#i-download"/></svg> Restore</button>
+            <button class="btn"><svg class="ic"><use href="#i-list"/></svg> Manage</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">Overview · multiple destinations</span>
+        <h3>The aggregate view scales</h3>
+        <ul>
+          <li><b>One verdict for the set.</b> "1 of 3 needs attention" is the only
+              sentence you read when something is wrong; the failing destination is
+              named right underneath it.</li>
+          <li><b>Cards, not a paragraph.</b> Each destination keeps its own dot and pill,
+              so health is scanned vertically instead of parsed line by line.</li>
+          <li><b>The primary action adapts.</b> "Back Up Now" becomes "Back Up All" when
+              there is more than one destination — the current panel already knows this,
+              the label just never says it.</li>
+          <li><b>No forced expansion.</b> A healthy destination stays one line; the
+              failing one carries its reason in the hero, not in six lines of caption.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== STATES ============================== -->
+  <section id="states">
+    <div class="sec-head"><span class="sec-num">04</span><h2>States — running, failed, empty</h2></div>
+    <p class="sub">
+      These are the moments the widget earns its place. Each gets a different
+      hero, a different colour, and a different primary action.
+    </p>
+
+    <!-- RUNNING -->
+    <div class="spec">
+      <div class="canvas">
+        <div class="panel">
+          <div class="p-head">
+            <span class="p-title">BackIt Up</span>
+            <div class="p-head-actions"><div class="iconbtn"><svg class="ic"><use href="#i-sliders"/></svg></div></div>
+          </div>
+
+          <div class="hero busy">
+            <div class="ringwrap">
+              <svg class="ring" viewBox="0 0 44 44"><circle class="bg" cx="22" cy="22" r="19"/><circle class="fg" cx="22" cy="22" r="19"/></svg>
+              <div class="ring-pct">48%</div>
+            </div>
+            <div class="hero-main">
+              <div class="hero-verdict" style="color:var(--busy)">Backing up</div>
+              <div class="hero-sub">backup-drive · <b>34.9 / 72.5 GB</b></div>
+              <div class="hero-meta">Bottling the moment… · ~11 MB/s <span class="proposed">proposed</span></div>
+            </div>
+          </div>
+
+          <div class="phases">
+            <div class="phase done"><div class="bar"></div><div class="lab">Unlock</div></div>
+            <div class="phase done"><div class="bar"></div><div class="lab">Scan</div></div>
+            <div class="phase now"><div class="bar"></div><div class="lab">Copy</div></div>
+            <div class="phase"><div class="bar"></div><div class="lab">Prune</div></div>
+          </div>
+
+          <div class="dest">
+            <div class="dest-top"><span class="dot busy"></span><span class="dest-name">Offsite</span><span class="pill busy">Idle</span></div>
+            <div class="dest-meta"><span>Queued after backup-drive</span></div>
+          </div>
+
+          <button class="btn danger block"><svg class="ic"><use href="#i-stop"/></svg> Stop this backup</button>
+          <div class="btnrow two">
+            <button class="btn"><svg class="ic"><use href="#i-download"/></svg> Restore</button>
+            <button class="btn"><svg class="ic"><use href="#i-list"/></svg> Manage</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">State · running</span>
+        <h3>A run is a story, not a number</h3>
+        <ul>
+          <li><b>Ring, not a hairline.</b> The 3&nbsp;px bar becomes a ring at the top left,
+              where the shield was — the same real estate, now legible from across the desk.</li>
+          <li><b>Phases replace the vague phrase.</b> Unlock → Scan → Copy → Prune, with the
+              current step lit. This is where the run actually is, and it never lies.</li>
+          <li><b>Colour is cyan, not red.</b> "Working" stops looking like "failed".</li>
+          <li><b>Stop is the only red thing.</b> It sits alone, full-width and destructive, so
+              it cannot be hit by accident.</li>
+          <li><b>Other destinations are visible.</b> With several configured, a queued one says
+              so instead of disappearing.</li>
+        </ul>
+        <div class="gapbox">
+          <b>Proposed data.</b> Throughput, ETA and the phase step map cleanly onto the
+          existing <code>progress.phase</code> and byte counters; rate and ETA would be
+          computed shell-side from two polls. The phase list is the only genuinely new
+          information and <code>progress.phase</code> already carries it.
+        </div>
+      </div>
+    </div>
+
+    <!-- FAILED -->
+    <div class="spec">
+      <div class="canvas">
+        <div class="panel">
+          <div class="p-head">
+            <span class="p-title">BackIt Up</span>
+            <div class="p-head-actions"><div class="iconbtn"><svg class="ic"><use href="#i-sliders"/></svg></div></div>
+          </div>
+
+          <div class="hero bad">
+            <div class="hero-badge"><svg class="ic lg"><use href="#i-alert"/></svg></div>
+            <div class="hero-main">
+              <div class="hero-verdict">Backup failed</div>
+              <div class="hero-sub"><b>Today, 03:04</b> · backup-drive</div>
+              <div class="hero-meta" style="color:var(--fg);opacity:.85">Repository is locked by another process</div>
+            </div>
+          </div>
+
+          <div class="dest">
+            <div class="dest-top"><span class="dot bad"></span><span class="dest-name">Newest good copy</span><span class="pill warn">2 days old</span></div>
+            <div class="dest-meta"><span>Yesterday, 03:00 · <span class="k">43.5 GB</span> · 1 snapshot</span></div>
+          </div>
+
+          <button class="btn primary block"><svg class="ic"><use href="#i-refresh"/></svg> Try again</button>
+          <div class="btnrow two">
+            <button class="btn"><svg class="ic"><use href="#i-term"/></svg> View log</button>
+            <button class="btn"><svg class="ic"><use href="#i-download"/></svg> Restore</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">State · failed</span>
+        <h3>Lead with the recovery, not the alarm</h3>
+        <ul>
+          <li><b>Name the reason.</b> The current panel says "A backup failed" and hides the
+              cause in the log. The reason belongs in the hero.</li>
+          <li><b>Answer "how bad?".</b> The most important number after a failure is the age
+              of your last good copy. It gets its own card with an age pill.</li>
+          <li><b>A way out.</b> "Try again" is the primary, "View log" is one tap away.</li>
+          <li><b>The bar badge matches.</b> Same red, same triangle — a shape you can see in
+              the corner of your eye.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- EMPTY -->
+    <div class="spec">
+      <div class="canvas">
+        <div class="panel">
+          <div class="p-head">
+            <span class="p-title">BackIt Up</span>
+          </div>
+          <div class="hero" style="flex-direction:column;align-items:flex-start;gap:12px;padding:20px 16px">
+            <div class="hero-badge" style="width:44px;height:44px"><svg class="ic lg"><use href="#i-clock"/></svg></div>
+            <div>
+              <div class="hero-verdict" style="font-size:16px">No backups yet</div>
+              <div class="hero-sub" style="color:var(--muted);font-size:12px;margin-top:4px">
+                Point BackIt Up at a folder and a destination. It copies, deduplicates
+                and encrypts — then keeps 7 daily, 4 weekly and 12 monthly copies
+                without being asked again.
+              </div>
+            </div>
+          </div>
+          <button class="btn primary block"><svg class="ic"><use href="#i-plus"/></svg> Set up backups</button>
+          <div class="note" style="text-align:center;font-size:10.5px">Takes about a minute · restic is the only dependency</div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">State · first run</span>
+        <h3>The empty state sells the feature</h3>
+        <ul>
+          <li><b>Explain the value, once.</b> The dedup/encrypt/retention promise belongs
+              here, where a new user is deciding, not buried in a README.</li>
+          <li><b>One button.</b> No menu to explore. "Set up backups" enters the wizard.</li>
+          <li><b>Set an expectation.</b> "Takes about a minute" removes the last reason to
+              put it off.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== RESTORE ============================== -->
+  <section id="restore">
+    <div class="sec-head"><span class="sec-num">05</span><h2>Restore — a timeline, not two dropdowns</h2></div>
+    <p class="sub">
+      The current restore view is a destination dropdown, a date dropdown and a
+      file list. The redesign turns the date into a visible timeline and adds a
+      breadcrumb, a filter and a restore queue.
+    </p>
+
+    <div class="spec">
+      <div class="canvas">
+        <div class="panel wide">
+          <div class="p-head">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="iconbtn"><svg class="ic"><use href="#i-arrow-l"/></svg></div>
+              <span style="font-size:13px;font-weight:600;color:var(--fg-bright)">Restore</span>
+            </div>
+            <span class="pill">backup-drive</span>
+          </div>
+
+          <!-- snapshot timeline -->
+          <div>
+            <div class="sec-label" style="margin-bottom:6px">Backup</div>
+            <div class="chips">
+              <div class="chip-snap sel"><span class="d">Today</span><span class="s">03:00 · 43.7 GB</span></div>
+              <div class="chip-snap"><span class="d">Yesterday</span><span class="s">03:00 · 43.6 GB</span></div>
+              <div class="chip-snap"><span class="d">4 Oct</span><span class="s">03:00 · 43.5 GB</span></div>
+              <div class="chip-snap" style="align-items:center;justify-content:center;min-width:46px"><span class="d">+12</span><span class="s">more</span></div>
+            </div>
+          </div>
+
+          <!-- breadcrumb + search -->
+          <div class="crumbs">
+            <span class="cr">larry</span><span class="sep">›</span>
+            <span class="cr">Documents</span><span class="sep">›</span>
+            <span class="cr here">Projects</span>
+          </div>
+          <div class="field">
+            <svg class="ic sm"><use href="#i-search"/></svg>
+            <span class="ph">Filter this folder…</span>
+          </div>
+
+          <!-- listing -->
+          <div class="list">
+            <div class="row"><svg class="ic folder"><use href="#i-up"/></svg><span class="name">..</span></div>
+            <div class="row"><svg class="ic folder"><use href="#i-folder"/></svg><span class="name">containers/</span><span class="size">—</span><svg class="ic sm" style="color:var(--muted)"><use href="#i-chev-r"/></svg></div>
+            <div class="row"><svg class="ic folder"><use href="#i-folder"/></svg><span class="name">docs/</span><span class="size">—</span><svg class="ic sm" style="color:var(--muted)"><use href="#i-chev-r"/></svg></div>
+            <div class="row hot"><svg class="ic file"><use href="#i-file"/></svg><span class="name">notes.md</span><span class="size">4.7 KB</span><span class="pill ok" style="padding:3px 5px"><svg class="ic" style="width:11px;height:11px"><use href="#i-check"/></svg></span></div>
+            <div class="row"><svg class="ic file"><use href="#i-file"/></svg><span class="name">roadmap.md</span><span class="size">11.2 KB</span><span class="pill" style="padding:3px 5px"><svg class="ic" style="width:11px;height:11px"><use href="#i-plus"/></svg></span></div>
+            <div class="row"><svg class="ic file"><use href="#i-file"/></svg><span class="name">budget.ods</span><span class="size">82.0 KB</span><span class="pill" style="padding:3px 5px"><svg class="ic" style="width:11px;height:11px"><use href="#i-plus"/></svg></span></div>
+          </div>
+
+          <div class="footbar">
+            <div class="fb-text">
+              <b>Restore 1 item</b>
+              to ~/Restored/2026-10-04/
+            </div>
+            <button class="btn primary" style="height:30px"><svg class="ic sm"><use href="#i-download"/></svg> Restore</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">Restore</span>
+        <h3>History you can see</h3>
+        <ul>
+          <li><b>Timeline chips.</b> Four visible snapshots with date and size, newest
+              selected. Today the date is hidden inside a dropdown — you cannot see how
+              far back your history goes or how big each point is.</li>
+          <li><b>Breadcrumb.</b> The path is a line you can read and click, not a single
+              grey <code>/home/alex</code> fragment.</li>
+          <li><b>Filter.</b> The listing already handles typing (it blocks the vim key
+              catcher while browsing, so this was always intended); the redesign surfaces
+              the field.</li>
+          <li><b>Multi-select.</b> Tick files and a sticky footer says exactly what will be
+              restored and where. The current flow restores one row per click.</li>
+          <li><b>Restore never overwrites.</b> The footer names the dated folder
+              (<code>~/Restored/…</code>) so the safety property is visible, not implied.</li>
+          <li><b>Folders navigate, files queue.</b> Chevron for folders, tick/plus for files —
+              two shapes, two jobs.</li>
+        </ul>
+        <div class="gapbox">
+          <b>Proposed data.</b> Per-snapshot sizes need one field in the snapshots payload
+          (<code>summary.total_bytes_processed</code> or a repo lookup). Everything else —
+          paths, entries, sizes, file counts — already arrives from
+          <code>snapshots</code> and <code>ls</code>.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== MANAGE ============================== -->
+  <section id="manage">
+    <div class="sec-head"><span class="sec-num">06</span><h2>Manage — a list of snapshots</h2></div>
+    <p class="sub">
+      Deleting is rare and irreversible. Instead of a dropdown that hides all
+      history and one red row, show every snapshot and guard the delete.
+    </p>
+
+    <div class="spec">
+      <div class="canvas">
+        <div class="panel wide" style="position:relative">
+          <div class="p-head">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="iconbtn"><svg class="ic"><use href="#i-arrow-l"/></svg></div>
+              <span style="font-size:13px;font-weight:600;color:var(--fg-bright)">Manage backups</span>
+            </div>
+            <span class="pill">backup-drive</span>
+          </div>
+
+          <div class="list">
+            <div class="row">
+              <svg class="ic" style="color:var(--fg)"><use href="#i-box"/></svg>
+              <span class="name">Today, 03:00</span>
+              <span class="latest">Latest</span>
+              <span class="size">352,891 files · 43.7 GB</span>
+              <span class="del"><svg class="ic sm"><use href="#i-trash"/></svg></span>
+            </div>
+            <div class="row">
+              <svg class="ic" style="color:var(--muted)"><use href="#i-box"/></svg>
+              <span class="name">Yesterday, 03:00</span>
+              <span class="size">352,402 files · 43.6 GB</span>
+              <span class="del"><svg class="ic sm"><use href="#i-trash"/></svg></span>
+            </div>
+            <div class="row">
+              <svg class="ic" style="color:var(--muted)"><use href="#i-box"/></svg>
+              <span class="name">4 Oct, 03:00</span>
+              <span class="size">351,908 files · 43.5 GB</span>
+              <span class="del"><svg class="ic sm"><use href="#i-trash"/></svg></span>
+            </div>
+            <div class="row">
+              <svg class="ic" style="color:var(--muted)"><use href="#i-box"/></svg>
+              <span class="name">3 Oct, 03:00</span>
+              <span class="size">351,204 files · 43.4 GB</span>
+              <span class="del"><svg class="ic sm"><use href="#i-trash"/></svg></span>
+            </div>
+          </div>
+
+          <div class="note" style="font-size:10.5px;padding:0 2px">
+            4 snapshots · retention keeps 7 daily, 4 weekly, 12 monthly
+          </div>
+
+          <!-- modal -->
+          <div class="modal-scrim">
+            <div class="modal">
+              <h4>Delete this backup?</h4>
+              <p>Today, 03:00 from <b style="color:var(--fg-bright)">backup-drive</b>.
+                 352,891 files. This cannot be undone.</p>
+              <div class="acts">
+                <button class="btn" style="height:30px">Cancel</button>
+                <button class="btn danger" style="height:30px;background:rgba(240,106,88,.16)"><svg class="ic sm"><use href="#i-trash"/></svg> Delete</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">Manage</span>
+        <h3>The whole history, one row each</h3>
+        <ul>
+          <li><b>Every snapshot is visible.</b> The dropdown becomes a list; finding the
+              one to prune no longer means opening a menu.</li>
+          <li><b>Delete lives on the row.</b> Quiet until hover, tinted red on approach —
+              it cannot be mistaken for the primary action.</li>
+          <li><b>The confirm names the stakes.</b> Date, destination, file count, and the
+              word "cannot be undone".</li>
+          <li><b>Retention is explained.</b> The footer line tells you why four snapshots
+              is normal, not a problem.</li>
+          <li><b>Busy work stays honest.</b> A delete with prune can take minutes; the
+              list stays visible behind a "Pruning…" line with the modal dismissed.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== SETUP ============================== -->
+  <section id="setup">
+    <div class="sec-head"><span class="sec-num">07</span><h2>Setup — a wizard, not a scroll</h2></div>
+    <p class="sub">
+      First-run and edit-config share one long form today: nine labels, four
+      inputs, a list and two toggles in a single column. The redesign splits it
+      into five short steps with a visible progress indicator and a review.
+    </p>
+
+    <!-- STEP 2: folders -->
+    <div class="spec">
+      <div class="canvas">
+        <div class="panel wide">
+          <div class="p-head">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="iconbtn"><svg class="ic"><use href="#i-arrow-l"/></svg></div>
+              <span style="font-size:13px;font-weight:600;color:var(--fg-bright)">Set up backups</span>
+            </div>
+            <span class="pill">2 / 5</span>
+          </div>
+
+          <div class="stepper">
+            <div class="step done"><span class="n"><svg class="ic sm"><use href="#i-check"/></svg></span></div>
+            <div class="stepline done"></div>
+            <div class="step now"><span class="n">2</span><span class="t">Folders</span></div>
+            <div class="stepline"></div>
+            <div class="step"><span class="n">3</span></div>
+            <div class="stepline"></div>
+            <div class="step"><span class="n">4</span></div>
+            <div class="stepline"></div>
+            <div class="step"><span class="n">5</span></div>
+          </div>
+
+          <div>
+            <div class="hero-verdict" style="font-size:15px">What should be backed up?</div>
+            <div class="note" style="font-size:11px;margin-top:3px">Every selected folder is added to the same repository. Hidden folders are included.</div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:7px">
+            <div class="src"><svg class="ic sm"><use href="#i-folder"/></svg><span class="p">/home/larry</span><span class="x"><svg class="ic sm"><use href="#i-x"/></svg></span></div>
+            <div class="src"><svg class="ic sm"><use href="#i-folder"/></svg><span class="p">/mnt/data</span><span class="x"><svg class="ic sm"><use href="#i-x"/></svg></span></div>
+            <button class="btn ghost block" style="border-style:dashed;color:var(--muted);justify-content:flex-start">
+              <svg class="ic sm"><use href="#i-plus"/></svg> Add a folder…
+            </button>
+          </div>
+
+          <div class="note" style="font-size:10.5px">Suggested: <span style="color:var(--fg)">Documents</span> · <span style="color:var(--fg)">Pictures</span> · <span style="color:var(--fg)">Projects</span></div>
+
+          <div class="btnrow two">
+            <button class="btn">Back</button>
+            <button class="btn primary">Continue</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">Setup · step 2</span>
+        <h3>One decision per screen</h3>
+        <ul>
+          <li><b>Stepper.</b> Five dots with the current label. You always know how much is
+              left, which is the single biggest fix for a long form.</li>
+          <li><b>Folders are objects.</b> Each source is a chip you can remove; the add
+              action is a dashed button. Today these are rows with a bare "×".</li>
+          <li><b>Suggestions lower the blank-page cost.</b> Naming common folders turns a
+              path-typing exercise into a click.</li>
+          <li><b>Back / Continue, not Apply / Cancel.</b> Verb pairs tell you where you are
+              going.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- STEP 4/5: schedule + review -->
+    <div class="spec">
+      <div class="canvas dark">
+        <div class="panel wide">
+          <div class="p-head">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="iconbtn"><svg class="ic"><use href="#i-arrow-l"/></svg></div>
+              <span style="font-size:13px;font-weight:600;color:var(--fg-bright)">Review</span>
+            </div>
+            <span class="pill">5 / 5</span>
+          </div>
+
+          <div class="review">
+            <div class="rr"><span class="rk">Name</span><span class="rv">backup-drive</span></div>
+            <div class="rr"><span class="rk">Repository</span><span class="rv">/run/media/larry/backup/restic</span></div>
+            <div class="rr"><span class="rk">Folders</span><span class="rv">/home/larry · /mnt/data</span></div>
+            <div class="rr"><span class="rk">Schedule</span><span class="rv">daily at 03:00</span></div>
+            <div class="rr"><span class="rk">Password</span><span class="rv">pass show omarchy/backup <span style="color:var(--busy)">(command)</span></span></div>
+            <div class="rr"><span class="rk">Snapshot</span><span class="rv"><span style="color:var(--ok)">on</span> — bootable rollback point</span></div>
+          </div>
+
+          <div class="sec-label">Keep this many copies</div>
+          <div class="retention">
+            <div class="ret"><div class="num">7</div><div class="lab">daily</div></div>
+            <div class="ret"><div class="num">4</div><div class="lab">weekly</div></div>
+            <div class="ret"><div class="num">12</div><div class="lab">monthly</div></div>
+            <div class="ret"><div class="num">3</div><div class="lab">yearly</div></div>
+          </div>
+
+          <div class="seg">
+            <div class="opt">daily</div><div class="opt on">weekly</div><div class="opt">custom</div>
+          </div>
+
+          <button class="btn primary block"><svg class="ic"><use href="#i-check"/></svg> Set up backups</button>
+          <div class="btnrow two">
+            <button class="btn">Back</button>
+            <button class="btn ghost" style="color:var(--muted)">Save as new</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <span class="tag">Setup · review</span>
+        <h3>Show the result before it happens</h3>
+        <ul>
+          <li><b>A real review step.</b> The current form applies from wherever you happen to
+              be; the review lets you catch a wrong path before a repository is created.</li>
+          <li><b>Retention becomes a picture.</b> Four numbers in a row explain the policy
+              far better than a config key — and reassure that space is bounded.</li>
+          <li><b>Schedule is a control, not a label.</b> A segmented picker with the chosen
+              time beside it; the raw systemd <code>OnCalendar</code> string moves under an
+              "advanced" disclosure.</li>
+          <li><b>Password mode is stated.</b> "(command)" is visible at review, so nobody is
+              surprised where the secret lives.</li>
+          <li><b>Edit reuses the wizard.</b> Opening edit-config jumps to Review with every
+              step marked done — same screens, no second form to maintain.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== BAR ============================== -->
+  <section id="bar">
+    <div class="sec-head"><span class="sec-num">08</span><h2>Bar icon</h2></div>
+    <p class="sub">
+      The bar stays an icon and nothing else — but the states get distinct
+      colours, a badge, and a tooltip that leads with the verdict.
+    </p>
+
+    <div class="canvas dark" style="padding:30px 26px">
+      <div class="bar-states" style="width:100%;max-width:720px">
+        <div class="bar-state">
+          <div class="sl">Never set up<span>idle</span></div>
+          <div class="bar-mock"><span class="spacer"></span><span class="bar-item idle"><svg class="ic"><use href="#i-clock"/></svg></span></div>
+          <div class="desc">Dim. Nothing is scheduled; the icon is a door, not an alarm.</div>
+        </div>
+        <div class="bar-state">
+          <div class="sl">Healthy<span>protected</span></div>
+          <div class="bar-mock"><span class="spacer"></span><span class="bar-item"><svg class="ic"><use href="#i-shield"/></svg></span></div>
+          <div class="desc">Foreground colour. Quiet on purpose — good news does not blink.</div>
+        </div>
+        <div class="bar-state">
+          <div class="sl">Running<span>working</span></div>
+          <div class="bar-mock"><span class="spacer"></span><span class="bar-item busy"><svg class="ic"><use href="#i-refresh"/></svg></span></div>
+          <div class="desc">Cyan and slow-pulsing. Shape and motion, not just hue.</div>
+        </div>
+        <div class="bar-state">
+          <div class="sl">Failed<span>attention</span></div>
+          <div class="bar-mock"><span class="spacer"></span><span class="bar-item bad"><svg class="ic"><use href="#i-warn-shield"/></svg><span class="badge">!</span></span></div>
+          <div class="desc">Red glyph plus a dot badge — readable without colour vision.</div>
+        </div>
+        <div class="bar-state">
+          <div class="sl">Tooltip<span>hover</span></div>
+          <div class="bar-mock" style="position:relative">
+            <span class="spacer"></span>
+            <span class="bar-item tipwrap"><svg class="ic"><use href="#i-shield"/></svg>
+              <span class="tooltip">Protected · last backup 6 hours ago</span>
+            </span>
+          </div>
+          <div class="desc">Leads with the same word the panel leads with.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes" style="max-width:900px">
+      <h3>Optional: a glanceable label</h3>
+      <ul>
+        <li>For users who want more than a colour, a compact variant can render
+            <b>6h</b> or <b>48%</b> beside the glyph — off by default, since bar space is
+            the scarce resource the current design rightly protects.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================== BEFORE / AFTER ============================== -->
+  <section id="ba">
+    <div class="sec-head"><span class="sec-num">09</span><h2>Before / after</h2></div>
+    <p class="sub">
+      The same destination, the same data, the same 360&nbsp;px. Only the
+      hierarchy changed.
+    </p>
+
+    <div class="ba">
+      <div class="ba-col">
+        <div class="ba-cap"><span class="k old">Current</span> <span class="note">same weight, no colour, no shape</span></div>
+        <div class="panel">
+          <div class="p-title" style="font-size:11px;margin-bottom:-2px">Backups</div>
+          <div style="display:flex;flex-direction:column;gap:9px;font-size:11px">
+            <div>
+              <div style="display:flex;justify-content:space-between"><span style="color:var(--fg)">backup-drive</span><span style="color:var(--muted)">4 Oct, 14:14</span></div>
+              <div style="color:var(--muted);font-size:10px">Audit: every file verified</div>
+              <div style="color:var(--muted);font-size:10px">System snapshot: taken</div>
+              <div style="color:var(--muted);font-size:10px">43.7 GB in 2 snapshots · 11.2 MB added</div>
+            </div>
+            <div style="border-top:1px solid var(--hair);padding-top:8px;color:var(--fg);font-size:11.5px;display:flex;flex-direction:column;gap:7px">
+              <span>Back Up Now</span>
+              <span>Restore Files…</span>
+              <span>Manage Backups…</span>
+              <span style="border-top:1px solid var(--hair);padding-top:7px">Edit Configuration…</span>
+              <span>Open Configuration…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ba-col">
+        <div class="ba-cap"><span class="k new">Redesigned</span> <span class="note">verdict, shape, weight, grouping</span></div>
+        <div class="panel">
+          <div class="hero ok" style="padding:11px 12px">
+            <div class="hero-badge" style="width:34px;height:34px"><svg class="ic"><use href="#i-shield"/></svg></div>
+            <div class="hero-main">
+              <div class="hero-verdict" style="font-size:14.5px">Protected</div>
+              <div class="hero-sub" style="font-size:11.5px">Last backup <b>6 hours ago</b></div>
+            </div>
+          </div>
+          <div class="dest">
+            <div class="dest-top"><span class="dot ok"></span><span class="dest-name">backup-drive</span><span class="pill ok">Healthy</span></div>
+            <div class="dest-meta" style="padding-bottom:8px"><span><span class="k">43.7 GB</span> stored</span><span>·</span><span><span class="k">2</span> snapshots</span></div>
+            <div class="dest-health">
+              <span class="tagcheck ok"><svg class="ic"><use href="#i-check"/></svg> Audit clean</span>
+              <span class="tagcheck ok"><svg class="ic"><use href="#i-check"/></svg> Snapshot taken</span>
+            </div>
+          </div>
+          <button class="btn primary block" style="height:32px"><svg class="ic sm"><use href="#i-play"/></svg> Back Up Now</button>
+          <div class="btnrow two">
+            <button class="btn" style="height:32px"><svg class="ic sm"><use href="#i-download"/></svg> Restore</button>
+            <button class="btn" style="height:32px"><svg class="ic sm"><use href="#i-list"/></svg> Manage</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== PLAN ============================== -->
+  <section id="plan">
+    <div class="sec-head"><span class="sec-num">10</span><h2>Build plan</h2></div>
+    <p class="sub">
+      Phased so each stage ships on its own and nothing is blocked on the
+      proposed data fields.
+    </p>
+
+    <div class="spec" style="grid-template-columns:1fr">
+      <div class="notes" style="max-width:920px">
+        <h3>Phase 1 — Overview (highest value, no new data)</h3>
+        <ul>
+          <li>Add semantic status colours to <code>Panel.qml</code>; stop using accent for "running".</li>
+          <li>Build the hero, destination card and grouped-action components.</li>
+          <li>Collapse audit and snapshot verdicts into check tags.</li>
+        </ul>
+        <h3>Phase 2 — Restore &amp; Manage</h3>
+        <ul>
+          <li>Snapshot timeline chips + breadcrumb + filter + multi-select restore queue.</li>
+          <li>Manage list with per-row delete and the named confirm.</li>
+        </ul>
+        <h3>Phase 3 — Setup wizard</h3>
+        <ul>
+          <li>Five steps with a stepper; reuse for edit-config by jumping to Review.</li>
+          <li>Retention visual and schedule segmented control.</li>
+        </ul>
+        <h3>Phase 4 — Bar &amp; polish</h3>
+        <ul>
+          <li>Distinct bar glyph per state, dot badge, verdict-first tooltip.</li>
+          <li>Optional compact label behind a setting.</li>
+        </ul>
+
+        <h3>New QML components to add</h3>
+        <ul>
+          <li><code>StatusHero.qml</code> — verdict, colour, badge, optional ring.</li>
+          <li><code>DestinationCard.qml</code> — dot, name, pill, metrics, health tags.</li>
+          <li><code>ActionButton.qml</code> — primary / secondary / danger, icon + label.</li>
+          <li><code>SnapshotChip.qml</code>, <code>Breadcrumb.qml</code>, <code>Stepper.qml</code>.</li>
+        </ul>
+
+        <h3>Status shape &amp; edge cases to keep</h3>
+        <ul>
+          <li>The failed badge is a shape as well as a colour — keep it.</li>
+          <li>Config-invalid and units-not-installed states still need their own calm,
+              explanatory screens; they slot in as extra hero variants, not error dumps.</li>
+          <li>A destructive action (stop, delete) is always alone and always red.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <div class="footer">
+    BackIt Up · redesign mockup v1 · rendered against Akane (#e15a48 / #12101c / #f0c4a8) and JetBrainsMono Nerd Font.
+    Every screen is fixed at the real panel width, so what fits here fits in the shell.
+  </div>
+
+</div>
+</body>
+</html>
