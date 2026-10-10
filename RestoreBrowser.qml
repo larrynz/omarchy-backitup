@@ -516,26 +516,13 @@ FocusScope {
 
           // Which backup set you are looking in. A pill when there is only one,
           // because a control with a single option is a label that costs a click.
-          Rectangle {
+          StatusPill {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             visible: BackItUpStore.destinations.length <= 1
-            implicitWidth: destLabel.implicitWidth + Style.space(14)
-            implicitHeight: destLabel.implicitHeight + Style.space(6)
-            radius: height / 2
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-            border.width: Style.space(1)
-            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14)
-
-            Text {
-              id: destLabel
-              anchors.centerIn: parent
-              text: BackItUpStore.browseName
-              textFormat: Text.PlainText
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
+            text: BackItUpStore.browseName
+            foreground: root.foreground
+            fontFamily: root.fontFamily
           }
 
           Dropdown {

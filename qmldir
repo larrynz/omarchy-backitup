@@ -10,4 +10,5 @@ SnapshotChip 1.0 SnapshotChip.qml
 RestoreBrowser 1.0 RestoreBrowser.qml
 ManageBrowser 1.0 ManageBrowser.qml
 RestoreRow 1.0 RestoreRow.qml
+SnapshotRow 1.0 SnapshotRow.qml
 MenuRow 1.0 MenuRow.qml
