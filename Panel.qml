@@ -77,12 +77,19 @@ Panel {
   // so each state gets its own hue rather than borrowing the accent. Running
   // used to paint the same red as failed, which made "busy" and "broken"
   // indistinguishable at a glance, the one thing the bar exists to prevent.
+  // Four states, not five: the bar is idle, protected, working or failed. A
+  // destination that is merely worth a look leaves the glyph in the bar's own
+  // foreground. An amber glyph reads on the dark theme surface but vanishes
+  // against a bright wallpaper -- and with the bar transparent the icon is
+  // drawn on the wallpaper, not the surface. `barForeground` is the shell's
+  // own contrast colour (it runs omarchy-bar-text-color against what is behind
+  // the bar), so it is dark over a bright wallpaper and light over a dark one.
+  // The panel and the tooltip carry the nuance; the bar stays legible.
   readonly property color barIconColor: {
     var s = BackItUpStore.overallStatus
+    if (!BackItUpStore.configured) return Qt.darker(barForeground, 1.9)
     if (s === "busy") return StatusPalette.busy
     if (s === "bad") return urgent
-    if (s === "warn") return StatusPalette.warn
-    if (!BackItUpStore.configured) return Qt.darker(barForeground, 1.9)
     return barForeground
   }
 
