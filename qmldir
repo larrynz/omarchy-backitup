@@ -14,4 +14,6 @@ SnapshotRow 1.0 SnapshotRow.qml
 Stepper 1.0 Stepper.qml
 SourceChip 1.0 SourceChip.qml
 SegmentedControl 1.0 SegmentedControl.qml
+RetentionRow 1.0 RetentionRow.qml
+ReviewRow 1.0 ReviewRow.qml
 MenuRow 1.0 MenuRow.qml
