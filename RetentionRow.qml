@@ -22,7 +22,7 @@ Row {
   property color accent: Color.accent
   property string fontFamily: Style.font.family
 
-  signal changed(var retention)
+  signal changed(var block)
 
   readonly property var tiers: [
     { key: "daily",   label: "Daily" },

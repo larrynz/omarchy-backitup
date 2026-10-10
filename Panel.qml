@@ -1,6 +1,7 @@
 import Quickshell
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Shapes
 import Qt.labs.folderlistmodel
 import qs.Commons
 import qs.Ui
@@ -50,6 +51,15 @@ Panel {
   property string pickerPath: "/run/media"
   property string setupValidationError: ""
   property string setupSchedule: "daily"
+  // Which of the five wizard steps is showing. One decision per screen: the
+  // old form was nine labels, four inputs, a list and two toggles in a single
+  // column, which is why it read as a wall rather than as a set of questions.
+  property int setupStep: 1
+  readonly property var setupStepLabels: ["Destination", "Folders", "Password", "Schedule", "Review"]
+  // How many copies of each tier to keep. Seeded complete -- the CLI's own
+  // defaults -- rather than null, so the review grid always shows the policy
+  // that would actually be kept, not a blank waiting to be filled.
+  property var setupRetention: ({ daily: 7, weekly: 4, monthly: 12, yearly: 3 })
   // The system-snapshot toggle: pairs a bootable rollback point with each
   // backup. Seeded from the destination on edit, kept as a draft like every
   // other field once set.
@@ -189,10 +199,157 @@ Panel {
     BackItUpStore.dateFormat = String(root.setting("dateFormat", "d MMM"))
   }
 
+  // Move between steps. The validation message belongs to the step that is
+  // being left, so it goes with it: carrying "a repository path is required"
+  // onto the schedule screen would blame the wrong question.
+  function setupGo(delta) {
+    root.setupStep = Math.max(1, Math.min(root.setupStepLabels.length,
+                                          root.setupStep + delta))
+    root.setupValidationError = ""
+  }
+
+  // Put the keyboard where the typing is. Only the steps with a text field
+  // take focus; the rest leave it with the panel so the arrow keys still
+  // scroll and the wheel still works.
+  function setupFocusStep() {
+    if (root.setupStep === 1) setupName.forceActiveFocus()
+    else if (root.setupStep === 3) setupPassword.forceActiveFocus()
+  }
+
+  // Status resolves a destination's policy to a complete block -- its own
+  // counts, then the global block, then the built-in defaults -- so seeding the
+  // review grid is a straight copy, with a fallback for the moment before the
+  // first status lands and retention is still null.
+  function retentionBlock(d) {
+    var r = (d && d.retention) ? d.retention : null
+    function pick(k, fallback) {
+      if (r && r[k] !== undefined && r[k] !== null) return Math.round(Number(r[k]))
+      return fallback
+    }
+    return { daily: pick("daily", 7), weekly: pick("weekly", 4),
+             monthly: pick("monthly", 12), yearly: pick("yearly", 3) }
+  }
+
+  // What the step still needs before it can be left. Checked per step rather
+  // than once at the end: an error about the repository is useless on the
+  // schedule screen, where the field that caused it is two screens back.
+  function setupStepError(step) {
+    var name = setupName.text.trim()
+    if (step === 1) {
+      if (name === "")
+        return "A name is required \u2014 it is how this destination is referred to"
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))
+        return "Name must start with a letter or digit, and contain only letters, digits, dashes, dots and underscores"
+      if (setupRepo.text.trim() === "")
+        return "A repository path is required"
+      return ""
+    }
+    if (step === 2) {
+      if (root.setupSources.length === 0)
+        return "At least one folder to back up is required"
+      return ""
+    }
+    if (step === 3) {
+      if (setupPassword.text === "" && !root.editHasPasswordSource)
+        return root.setupPassIsCommand
+          ? "A password command is required \u2014 for example: pass show <entry> or op read <secret>"
+          : "A password is required \u2014 it is stored in a 600 file, never in the configuration"
+      return ""
+    }
+    return ""
+  }
+
+  // The schedule as the CLI will record it. An unaltered preset field means the
+  // preset itself; an altered one is a custom expression, which the CLI
+  // validates and records; an emptied one means no schedule at all, and backups
+  // then run only from the panel.
+  function scheduleValue() {
+    var t = setupScheduleCustom.text.trim()
+    if (root.setupSchedule !== "custom" && t === root.presetExpression(root.setupSchedule))
+      return root.setupSchedule
+    if (t === "") return "manual"
+    return t
+  }
+
+  // The same schedule in words, for the review read-back. Spelled out rather
+  // than echoing the stored value, because the point of reading it back is to
+  // catch a schedule that is not what you meant.
+  function scheduleSummary() {
+    if (root.setupSchedule !== "custom") {
+      var when = { daily: "at 03:00", weekly: "Mondays at 03:00",
+                   monthly: "on the 1st at 03:00", hourly: "every hour" }
+      return root.setupSchedule + " \u2014 " + (when[root.setupSchedule] || "as scheduled")
+    }
+    var t = setupScheduleCustom.text.trim()
+    return t === "" ? "only when run by hand" : t
+  }
+
+  // Folders worth suggesting: the usual ones that actually exist here and are
+  // not already listed. Listing ~ is what makes them real -- a suggestion for a
+  // folder that is not there only fails later, at backup time.
+  function suggestedSources() {
+    var home = Quickshell.env("HOME") || ""
+    // The listing arrives asynchronously, so reading count here is what makes
+    // the suggestions appear when it does instead of staying empty forever.
+    if (homeDirs.count === 0) return []
+    var names = ["Documents", "Pictures", "Projects", "Music", "Videos"]
+    var out = []
+    for (var i = 0; i < names.length; i++) {
+      var full = home + "/" + names[i]
+      if (homeDirs.indexOf(full) < 0) continue
+      if (root.setupSources.indexOf(full) >= 0) continue
+      out.push(full)
+    }
+    return out
+  }
+
+  // The one place that writes. Everything is validated against the same rules
+  // the units get, and the CLI refuses loudly before anything is written, so a
+  // half-created destination is not a state this can leave behind.
+  function setupApply() {
+    if (BackItUpStore.setupBusy) return
+    for (var step = 1; step < root.setupStepLabels.length; step++) {
+      var err = root.setupStepError(step)
+      if (err !== "") {
+        root.setupValidationError = "Step " + step + " (" + root.setupStepLabels[step - 1] + "): " + err
+        return
+      }
+    }
+    root.setupValidationError = ""
+    BackItUpStore.applySetup({
+      name: setupName.text.trim(),
+      display_name: setupName.text.trim(),
+      repository: setupRepo.text.trim(),
+      schedule: root.scheduleValue(),
+      password: root.setupPassIsCommand ? undefined : setupPassword.text,
+      password_command: root.setupPassIsCommand ? setupPassword.text.trim() : undefined,
+      source: root.setupSources.slice(),
+      system_snapshot: root.setupSystemSnapshot,
+      // Only when it is not the stock policy. The review grid always shows all
+      // four numbers, but a destination left at 7/4/12/3 should keep following
+      // the global block and the built-in defaults rather than being pinned to
+      // today's numbers -- sending the block unconditionally would freeze every
+      // new destination at whatever the defaults happened to be, and a later
+      // change to the global policy would quietly skip it. Tuning any tier
+      // writes the whole block, which is what the grid showed.
+      retention: root.retentionIsStock() ? undefined : root.setupRetention
+    })
+  }
+
+  // Is the review's grid still the stock policy? Compared against the same
+  // defaults retentionBlock falls back to, so the two cannot drift apart.
+  function retentionIsStock() {
+    var stock = root.retentionBlock(null)
+    var r = root.setupRetention || {}
+    for (var k in stock) {
+      if (Math.round(Number(r[k])) !== stock[k]) return false
+    }
+    return true
+  }
+
   // The default calendar expression each schedule preset expands to, so the
-  // setup form can show it in an editable field: the presets stay short
-  // words to cycle through, and the exact time they fire is right there to
-  // alter. Empty for manual (no field) and custom (type from scratch).
+  // setup form can show it in an editable field: the presets stay short words
+  // to pick between, and the exact time they fire is right there to alter.
   function presetExpression(sched) {
     if (sched === "daily") return "*-*-* 03:00:00"
     if (sched === "weekly") return "Mon *-*-* 03:00:00"
@@ -240,6 +397,13 @@ Panel {
     var src = BackItUpStore.sources && BackItUpStore.sources.length > 0
               ? BackItUpStore.sources.slice() : [Quickshell.env("HOME") || "/"]
     root.setupSources = src
+    // Editing reuses the same five screens instead of keeping a second form
+    // in step with this one, and opens on the review with every earlier step
+    // already walked: the values are all filled in, so the only thing left to
+    // do is check them before saving. The stepper marks 1-4 done because they
+    // are -- there is nothing to ask.
+    root.setupRetention = root.retentionBlock(d)
+    root.setupStep = root.setupStepLabels.length
     root.setupValidationError = ""
   }
 
@@ -279,7 +443,10 @@ Panel {
 
   onSettingUpChanged: {
     if (settingUp) {
-      setupName.forceActiveFocus()
+      // A fresh wizard starts at the beginning; editConfig sets its own step
+      // and re-focuses immediately after this fires.
+      if (!root.editingConfig) root.setupStep = 1
+      root.setupFocusStep()
       // The schedule field shows the selected preset's default on entry: the
       // first open selects daily while the field starts out empty. Only when
       // it is empty, though -- a draft the user typed survives closing the
@@ -302,6 +469,11 @@ Panel {
       keyCatcher.forceActiveFocus()
     }
   }
+
+  // Stepping into a text step should put the caret in the field rather than
+  // make the user click it -- the step is a question and the field is the
+  // answer.
+  onSetupStepChanged: root.setupFocusStep()
 
   Connections {
     target: BackItUpStore
@@ -737,153 +909,140 @@ Panel {
           width: setupScroll.width
           spacing: 0
 
-          Text {
-            width: parent.width
-            bottomPadding: Style.space(8)
-            text: "Set up backups"
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            width: parent.width
-            bottomPadding: Style.space(8)
-            text: "One destination, one repository, one schedule. The password is stored in a 600 file next to the configuration, never in the configuration itself."
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: root.dimmer
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            width: parent.width
-            bottomPadding: Style.space(2)
-            text: "Name"
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          TextField {
-            id: setupName
-            width: parent.width
-            placeholderText: "backup"
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            color: root.foreground
-            placeholderTextColor: root.dimmer
-            selectByMouse: true
-            background: Rectangle {
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-              radius: Style.space(4)
-              border.width: 1
-              border.color: setupName.activeFocus ? root.accent
-                            : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-            }
-          }
-
-          Text {
-            width: parent.width
-            topPadding: Style.space(6)
-            bottomPadding: Style.space(2)
-            text: "Folders to back up"
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          // The backup folders, one row each with a remove button. Seeded
-          // with the home folder (or the existing configuration's list), so
-          // the first run has something to back up.
-          Repeater {
-            model: root.setupSources
-
-            delegate: Item {
-              width: parent.width
-              height: sourceRowBg.height
-
-              Rectangle {
-                id: sourceRowBg
-                width: parent.width
-                height: Math.max(pathText.implicitHeight + Style.space(6), Style.space(26))
-                radius: Style.space(4)
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-                border.width: 1
-                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-
-                Text {
-                  id: pathText
-                  anchors.left: parent.left
-                  anchors.leftMargin: Style.space(6)
-                  anchors.right: removeButton.left
-                  anchors.rightMargin: Style.space(4)
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: modelData
-                  textFormat: Text.PlainText
-                  elide: Text.ElideMiddle
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
-
-                Text {
-                  id: removeButton
-                  anchors.right: parent.right
-                  anchors.rightMargin: Style.space(6)
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: "\u00d7"
-                  textFormat: Text.PlainText
-                  color: root.dimmer
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-
-                TapHandler {
-                  onTapped: {
-                    var i = index
-                    root.setupSources = root.setupSources.filter(function(_, j) { return j !== i })
-                  }
-                }
-              }
-            }
-          }
-
-          MenuRow {
-            width: parent.width
-            label: "Add folder\u2026"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: {
-              root.pickerPath = Quickshell.env("HOME") || "/"
-              root.pickerTarget = "source"
-              root.pickingRepo = true
-            }
-          }
-
-          Text {
-            width: parent.width
-            topPadding: Style.space(6)
-            bottomPadding: Style.space(2)
-            text: "Repository"
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
+          // --- head -----------------------------------------------------------
+          //
+          // The count is repeated from the stepper even though the dots already
+          // show it: the dots are a shape and "3 / 5" is the number. The left
+          // control is Back on steps 2-5 and Close on step 1 -- never a
+          // disabled Back, because a dead control at the top of a form is a
+          // worse landmark than no control at all.
           Item {
             width: parent.width
-            height: setupRepo.height
+            height: Style.space(28)
+
+            Rectangle {
+              id: setupHeadButton
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(24)
+              height: width
+              radius: Style.space(6)
+              color: setupHeadArea.containsMouse
+                     ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                     : "transparent"
+
+              Text {
+                anchors.centerIn: parent
+                text: root.setupStep > 1 ? BackItUpStore.iconArrowLeft : BackItUpStore.iconX
+                textFormat: Text.PlainText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              MouseArea {
+                id: setupHeadArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.setupStep > 1 ? root.setupGo(-1) : (root.settingUp = false)
+              }
+            }
+
+            Text {
+              anchors.left: setupHeadButton.right
+              anchors.leftMargin: Style.space(10)
+              anchors.right: stepPill.left
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              // The title names the screen, so it changes with the step: the
+              // last one is not "set up backups", it is reading back what you
+              // are about to set up.
+              text: root.setupStep === root.setupStepLabels.length
+                    ? "Review"
+                    : (root.editingConfig ? "Edit configuration" : "Set up backups")
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            StatusPill {
+              id: stepPill
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.setupStep + " / " + root.setupStepLabels.length
+              state: "idle"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+          }
+
+          Item { width: 1; height: Style.space(10) }
+
+          Stepper {
+            width: parent.width
+            count: root.setupStepLabels.length
+            current: root.setupStep
+            labels: root.setupStepLabels
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+          }
+
+          Item { width: 1; height: Style.space(14) }
+
+          // --- step 1: destination --------------------------------------------
+
+          Column {
+            width: parent.width
+            visible: root.setupStep === 1
+            spacing: Style.space(3)
+
+            Text {
+              width: parent.width
+              text: "Where should backups go?"
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              bottomPadding: Style.space(6)
+              text: "A folder or mounted drive. Restic writes an encrypted repository into it, so the folder may start out empty."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          Column {
+            width: parent.width
+            visible: root.setupStep === 1
+            spacing: 0
+
+            Text {
+              width: parent.width
+              bottomPadding: Style.space(3)
+              text: "Name"
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
 
             TextField {
-              id: setupRepo
-              width: parent.width - repoBrowseButton.width - Style.space(6)
-              placeholderText: "/run/media/\u2026/restic"
+              id: setupName
+              width: parent.width
+              placeholderText: "backup"
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
               color: root.foreground
@@ -893,167 +1052,587 @@ Panel {
                 color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
                 radius: Style.space(4)
                 border.width: 1
-                border.color: setupRepo.activeFocus ? root.accent
+                border.color: setupName.activeFocus ? root.accent
                               : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
               }
             }
 
-            // The folder picker: opens the browse view rooted at the mounted
-            // drives for this user, so picking the repository is a click, not
-            // a typed path.
-            Rectangle {
-              id: repoBrowseButton
-              anchors.right: parent.right
-              width: Style.space(64)
-              height: parent.height
-              radius: Style.space(4)
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-              border.width: 1
-              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+            Text {
+              width: parent.width
+              topPadding: Style.space(8)
+              bottomPadding: Style.space(3)
+              text: "Repository"
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
 
-              Text {
-                anchors.centerIn: parent
-                text: "Browse\u2026"
-                textFormat: Text.PlainText
-                color: root.foreground
+            Item {
+              width: parent.width
+              height: setupRepo.height
+
+              TextField {
+                id: setupRepo
+                width: parent.width - repoBrowseButton.width - Style.space(6)
+                placeholderText: "/run/media/\u2026/restic"
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
+                font.pixelSize: Style.font.body
+                color: root.foreground
+                placeholderTextColor: root.dimmer
+                selectByMouse: true
+                background: Rectangle {
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                  radius: Style.space(4)
+                  border.width: 1
+                  border.color: setupRepo.activeFocus ? root.accent
+                                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                }
               }
 
-              TapHandler {
-                onTapped: {
-                  root.pickerPath = "/run/media/" + (Quickshell.env("USER") || "")
-                  root.pickerTarget = "repo"
-                  root.pickingRepo = true
+              // The folder picker: opens the browse view rooted at the mounted
+              // drives for this user, so picking the repository is a click, not
+              // a typed path.
+              Rectangle {
+                id: repoBrowseButton
+                anchors.right: parent.right
+                width: Style.space(64)
+                height: parent.height
+                radius: Style.space(4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+                Text {
+                  anchors.centerIn: parent
+                  text: "Browse\u2026"
+                  textFormat: Text.PlainText
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                TapHandler {
+                  onTapped: {
+                    root.pickerPath = "/run/media/" + (Quickshell.env("USER") || "")
+                    root.pickerTarget = "repo"
+                    root.pickingRepo = true
+                  }
                 }
               }
             }
           }
 
-          Text {
-            width: parent.width
-            topPadding: Style.space(6)
-            bottomPadding: Style.space(2)
-            text: "Password"
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
+          // --- step 2: folders ------------------------------------------------
 
-          Text {
+          Column {
             width: parent.width
-            topPadding: Style.space(6)
-            bottomPadding: Style.space(2)
-            text: root.setupPassIsCommand
-                  ? "Command that prints the password"
-                  : "Password (stored in a 600 file)"
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
+            visible: root.setupStep === 2
+            spacing: Style.space(7)
 
-          TextField {
-            id: setupPassword
-            width: parent.width
-            echoMode: root.setupPassIsCommand ? TextInput.Normal : TextInput.Password
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            color: root.foreground
-            selectByMouse: true
-            background: Rectangle {
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-              radius: Style.space(4)
-              border.width: 1
-              border.color: setupPassword.activeFocus ? root.accent
-                            : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+            Text {
+              width: parent.width
+              text: "What should be backed up?"
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              bottomPadding: Style.space(2)
+              text: "Every folder here goes into the same repository. Hidden folders are included."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            // Each source is an object you can point at, not a line in a list:
+            // the chip carries its own remove target, so there is no doubt
+            // which folder the x belongs to.
+            Repeater {
+              model: root.setupSources
+
+              delegate: SourceChip {
+                width: parent.width
+                path: String(modelData)
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onRemoveRequested: {
+                  var i = index
+                  root.setupSources = root.setupSources.filter(function(_, j) { return j !== i })
+                }
+              }
+            }
+
+            // Nothing to back up is a state worth showing rather than an empty
+            // gap: an empty list and a list that failed to load look identical
+            // otherwise, and this is the one step that cannot be skipped.
+            Text {
+              width: parent.width
+              visible: root.setupSources.length === 0
+              text: "No folders yet. Add at least one \u2014 the home folder is a good start."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            // The add action is a dashed slot rather than another chip: it is
+            // where a folder would go, not a folder. Drawn as a Shape because
+            // Rectangle borders cannot be dashed.
+            Item {
+              id: addFolderButton
+              width: parent.width
+              height: Style.space(32)
+
+              Rectangle {
+                anchors.fill: parent
+                radius: Style.space(7)
+                color: addFolderArea.containsMouse
+                       ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                       : "transparent"
+              }
+
+              Shape {
+                anchors.fill: parent
+                ShapePath {
+                  strokeColor: root.dim
+                  strokeWidth: Style.space(1)
+                  strokeStyle: ShapePath.DashLine
+                  dashPattern: [4, 3]
+                  fillColor: "transparent"
+                  startX: 0.5
+                  startY: 0.5
+                  PathLine { x: addFolderButton.width - 0.5; y: 0.5 }
+                  PathLine { x: addFolderButton.width - 0.5; y: addFolderButton.height - 0.5 }
+                  PathLine { x: 0.5; y: addFolderButton.height - 0.5 }
+                  PathLine { x: 0.5; y: 0.5 }
+                }
+              }
+
+              Row {
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(8)
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: BackItUpStore.iconPlus
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Add a folder\u2026"
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+              }
+
+              MouseArea {
+                id: addFolderArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.pickerPath = Quickshell.env("HOME") || "/"
+                  root.pickerTarget = "source"
+                  root.pickingRepo = true
+                }
+              }
+            }
+
+            // Suggestions lower the cost of the blank page: the folders worth
+            // backing up are the same on almost every machine, so naming them
+            // turns a path-typing exercise into a click. Only folders that
+            // actually exist, and that are not already listed.
+            Row {
+              width: parent.width
+              visible: root.suggestedSources().length > 0
+              spacing: Style.space(6)
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Add:"
+                textFormat: Text.PlainText
+                color: root.dimmer
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Repeater {
+                model: root.suggestedSources()
+
+                delegate: PanelButton {
+                  label: String(modelData)
+                  variant: "ghost"
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: {
+                    var next = root.setupSources.slice()
+                    next.push(String(modelData))
+                    root.setupSources = next
+                  }
+                }
+              }
             }
           }
 
-          MenuRow {
-            width: parent.width
-            label: root.setupPassIsCommand
-                   ? "Fetched with a command \u2014 click to store in a key file instead"
-                   : "Stored in a key file \u2014 click to fetch with a command instead"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: root.setupPassIsCommand = !root.setupPassIsCommand
-          }
+          // --- step 3: password -----------------------------------------------
 
-          Text {
+          Column {
             width: parent.width
-            topPadding: Style.space(6)
-            bottomPadding: Style.space(2)
-            text: "Schedule"
-            textFormat: Text.PlainText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
+            visible: root.setupStep === 3
+            spacing: Style.space(3)
 
-          MenuRow {
-            width: parent.width
-            label: setupSchedule === "custom"
-                   ? "custom \u2014 empty means no schedule"
-                   : setupSchedule + " \u2014 click to change"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: {
-              var presets = ["daily", "weekly", "monthly", "hourly", "custom"]
-              var i = presets.indexOf(setupSchedule)
-              setupSchedule = presets[(i + 1) % presets.length]
-              // The field always shows the selected preset's default time,
-              // editable in place. Cycling away and back resets it, which is
-              // the point: the presets are starting points, not commitments.
-              // Custom comes with an empty field: an empty field means no
-              // schedule, so it doubles as the manual option.
-              setupScheduleCustom.text = root.presetExpression(setupSchedule)
+            Text {
+              width: parent.width
+              text: "How is the repository unlocked?"
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              bottomPadding: Style.space(8)
+              text: "The key is written to a 600 file beside the configuration, never into it. Without it the repository cannot be opened \u2014 by you or by anyone else."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
             }
           }
 
-          // The exact time the schedule fires, as a systemd OnCalendar
-          // expression. Pre-filled with the selected preset's default and
-          // editable in place: weekdays only, several times a day, the first
-          // of the month -- whatever the presets cannot name, type here. The
-          // CLI validates it with check_unit_values on apply.
-          TextField {
-            id: setupScheduleCustom
-            visible: setupSchedule !== "manual"
+          Column {
             width: parent.width
-            placeholderText: "systemd OnCalendar, e.g. Mon..Fri *-*-* 09,17:00:00"
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            color: root.foreground
-            placeholderTextColor: root.dimmer
-            selectByMouse: true
-            background: Rectangle {
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-              radius: Style.space(4)
-              border.width: 1
-              border.color: setupScheduleCustom.activeFocus ? root.accent
-                            : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+            visible: root.setupStep === 3
+            spacing: 0
+
+            Text {
+              width: parent.width
+              bottomPadding: Style.space(3)
+              text: root.setupPassIsCommand
+                    ? "Command that prints the password"
+                    : "Password (stored in a 600 file)"
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            TextField {
+              id: setupPassword
+              width: parent.width
+              echoMode: root.setupPassIsCommand ? TextInput.Normal : TextInput.Password
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              color: root.foreground
+              selectByMouse: true
+              background: Rectangle {
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                radius: Style.space(4)
+                border.width: 1
+                border.color: setupPassword.activeFocus ? root.accent
+                              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+              }
+            }
+
+            // A command is not a secret -- the config holds it in plain text --
+            // so switching to that mode reveals the field rather than reusing
+            // the masked one.
+            MenuRow {
+              width: parent.width
+              label: root.setupPassIsCommand
+                     ? "Fetched with a command \u2014 click to store in a key file instead"
+                     : "Stored in a key file \u2014 click to fetch with a command instead"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.setupPassIsCommand = !root.setupPassIsCommand
             }
           }
 
-          MenuRow {
+          // --- step 4: schedule -----------------------------------------------
+
+          Column {
             width: parent.width
-            visible: BackItUpStore.systemSnapshotAvailable
-            label: root.setupSystemSnapshot
-                   ? "Also take a system snapshot \u2014 click to turn off"
-                   : "Also take a system snapshot \u2014 click to turn on"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: root.setupSystemSnapshot = !root.setupSystemSnapshot
+            visible: root.setupStep === 4
+            spacing: Style.space(3)
+
+            Text {
+              width: parent.width
+              text: "When should this run?"
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              bottomPadding: Style.space(8)
+              text: "The timer runs as your user, so it only fires while you are logged in. A run missed while the machine was off is caught up afterwards."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
           }
 
-          PanelSeparator { width: parent.width; foreground: root.foreground }
+          Column {
+            width: parent.width
+            visible: root.setupStep === 4
+            spacing: Style.space(7)
+
+            SegmentedControl {
+              width: parent.width
+              options: [
+                { value: "daily",   label: "daily" },
+                { value: "weekly",  label: "weekly" },
+                { value: "monthly", label: "monthly" },
+                { value: "hourly",  label: "hourly" },
+                { value: "custom",  label: "custom" }
+              ]
+              value: root.setupSchedule
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              // Selecting a preset also fills the expression, which is what the
+              // apply step reads: the field stays the one source of truth, and
+              // the picker is only a faster way to write into it.
+              onSelected: function(v) {
+                root.setupSchedule = v
+                if (v !== "custom")
+                  setupScheduleCustom.text = root.presetExpression(v)
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: root.setupSchedule === "custom"
+                    ? "A systemd OnCalendar expression. Leave it empty to run only when you ask."
+                    : "Next run: " + (root.setupSchedule === "hourly" ? "every hour"
+                                      : root.setupSchedule + " at 03:00")
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.dimmer
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            // The raw expression lives behind a disclosure: it is the real
+            // setting, but reading it is not required to choose a schedule, and
+            // it is the part most people should never have to look at.
+            MenuRow {
+              width: parent.width
+              label: root.setupSchedule === "custom"
+                     ? "Custom schedule shown \u2014 click a preset above to hide it"
+                     : "Advanced \u2014 edit the systemd expression\u2026"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: {
+                if (root.setupSchedule === "custom") {
+                  root.setupSchedule = "daily"
+                  setupScheduleCustom.text = root.presetExpression("daily")
+                } else {
+                  root.setupSchedule = "custom"
+                }
+              }
+            }
+
+            TextField {
+              id: setupScheduleCustom
+              width: parent.width
+              visible: root.setupSchedule === "custom"
+              placeholderText: "*-*-* 03:00:00"
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              color: root.foreground
+              placeholderTextColor: root.dimmer
+              selectByMouse: true
+              background: Rectangle {
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                radius: Style.space(4)
+                border.width: 1
+                border.color: setupScheduleCustom.activeFocus ? root.accent
+                              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+              }
+            }
+
+            MenuRow {
+              width: parent.width
+              visible: BackItUpStore.systemSnapshotAvailable
+              label: root.setupSystemSnapshot
+                     ? "Also take a system snapshot \u2014 click to turn off"
+                     : "Also take a system snapshot \u2014 click to turn on"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.setupSystemSnapshot = !root.setupSystemSnapshot
+            }
+          }
+
+          // --- step 5: review -------------------------------------------------
+
+          Column {
+            width: parent.width
+            visible: root.setupStep === root.setupStepLabels.length
+            spacing: Style.space(3)
+
+            Text {
+              width: parent.width
+              text: "Does this look right?"
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              bottomPadding: Style.space(4)
+              text: root.editingConfig
+                    ? "Applying writes these values back over the existing configuration."
+                    : "Nothing has been written yet. Applying creates the repository and switches on the schedule."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          Column {
+            width: parent.width
+            visible: root.setupStep === root.setupStepLabels.length
+            spacing: Style.space(9)
+
+            // The read-back: every value that will be written, in the words the
+            // configuration uses, so a wrong path is caught here rather than in
+            // a repository that was just created.
+            Rectangle {
+              width: parent.width
+              height: reviewColumn.implicitHeight
+              radius: Style.space(8)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+              border.width: Style.space(1)
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14)
+
+              Column {
+                id: reviewColumn
+                width: parent.width
+                spacing: 0
+
+                ReviewRow {
+                  width: parent.width
+                  separator: false
+                  key: "Name"
+                  value: setupName.text.trim() === "" ? "\u2014" : setupName.text.trim()
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                ReviewRow {
+                  width: parent.width
+                  key: "Repository"
+                  value: setupRepo.text.trim() === "" ? "\u2014" : setupRepo.text.trim()
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                ReviewRow {
+                  width: parent.width
+                  key: "Folders"
+                  value: root.setupSources.length === 0
+                         ? "\u2014"
+                         : root.setupSources.join("  \u00b7  ")
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                ReviewRow {
+                  width: parent.width
+                  key: "Schedule"
+                  value: root.scheduleSummary()
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                ReviewRow {
+                  width: parent.width
+                  key: "Password"
+                  value: root.setupPassIsCommand
+                         ? (setupPassword.text.trim() === ""
+                            ? "the existing command" : setupPassword.text.trim() + "  (command)")
+                         : (setupPassword.text === ""
+                            ? "the existing key file" : "stored in a 600 key file")
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                ReviewRow {
+                  width: parent.width
+                  key: "Snapshot"
+                  value: !BackItUpStore.systemSnapshotAvailable
+                         ? "not available on this system"
+                         : (root.setupSystemSnapshot
+                            ? "on \u2014 a bootable rollback point"
+                            : "off")
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: "Keep this many copies"
+              textFormat: Text.PlainText
+              color: root.dimmer
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            RetentionRow {
+              width: parent.width
+              retention: root.setupRetention
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onChanged: root.setupRetention = block
+            }
+          }
+
+          // --- messages and footer --------------------------------------------
+
+          Item { width: 1; height: Style.space(14) }
 
           Text {
             width: parent.width
             visible: root.setupValidationError !== ""
-            topPadding: visible ? Style.space(6) : 0
-            bottomPadding: visible ? Style.space(6) : 0
+            bottomPadding: visible ? Style.space(8) : 0
             text: root.setupValidationError
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -1065,8 +1644,7 @@ Panel {
           Text {
             width: parent.width
             visible: BackItUpStore.setupError !== ""
-            topPadding: visible ? Style.space(6) : 0
-            bottomPadding: visible ? Style.space(6) : 0
+            bottomPadding: visible ? Style.space(8) : 0
             text: BackItUpStore.plain(BackItUpStore.setupError)
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -1078,8 +1656,7 @@ Panel {
           Text {
             width: parent.width
             visible: BackItUpStore.setupBusy
-            topPadding: Style.space(4)
-            bottomPadding: Style.space(4)
+            bottomPadding: visible ? Style.space(8) : 0
             text: "Applying \u2014 creating the repository and switching on the schedule\u2026"
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -1092,6 +1669,7 @@ Panel {
             width: parent.width
             visible: !BackItUpStore.setupBusy && BackItUpStore.setupDone !== ""
                      && root.setupValidationError === "" && BackItUpStore.setupError === ""
+            bottomPadding: visible ? Style.space(8) : 0
             text: BackItUpStore.plain(BackItUpStore.setupDone)
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -1100,67 +1678,47 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
-          MenuRow {
+          // Back and Continue rather than Cancel and Apply: the verbs say where
+          // you are going, and the only step that writes anything says what it
+          // writes. The row is always two halves so the buttons do not move
+          // around under the pointer as the wizard advances.
+          Row {
             width: parent.width
-            label: "Apply"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: {
-              if (BackItUpStore.setupBusy) return
-              var name = setupName.text.trim()
-              var repo = setupRepo.text.trim()
-              if (name === "" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
-                root.setupValidationError =
-                  "Name must start with a letter or digit, and contain only letters, digits, dashes, dots and underscores"
-                return
-              }
-              if (repo === "") {
-                root.setupValidationError = "A repository path is required"
-                return
-              }
-              if (setupPassword.text === "" && !root.editHasPasswordSource) {
-                root.setupValidationError = root.setupPassIsCommand
-                  ? "A password command is required \u2014 for example: pass show <entry> or op read <secret>"
-                  : "A password is required \u2014 it is stored in a 600 file, never in the configuration"
-                return
-              }
-              if (root.setupSources.length === 0) {
-                root.setupValidationError = "At least one folder to back up is required"
-                return
-              }
-              root.setupValidationError = ""
-              // An unaltered field means the preset itself; an altered one is
-              // a custom expression, which the CLI validates and records. An
-              // emptied field means no schedule at all: backups then run only
-              // from the panel.
-              var schedText = setupScheduleCustom.text.trim()
-              var schedule
-              if (setupSchedule !== "custom" && schedText === root.presetExpression(setupSchedule)) {
-                schedule = setupSchedule
-              } else if (schedText === "") {
-                schedule = "manual"
-              } else {
-                schedule = schedText
-              }
-              BackItUpStore.applySetup({
-                name: name,
-                display_name: name,
-                repository: repo,
-                schedule: schedule,
-                password: root.setupPassIsCommand ? undefined : setupPassword.text,
-                password_command: root.setupPassIsCommand ? setupPassword.text.trim() : undefined,
-                source: root.setupSources.slice(),
-                system_snapshot: root.setupSystemSnapshot
-              })
-            }
-          }
+            spacing: Style.space(8)
 
-          MenuRow {
-            width: parent.width
-            label: "Cancel"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: root.settingUp = false
+            PanelButton {
+              width: (parent.width - parent.spacing) / 2
+              label: "Back"
+              variant: "default"
+              enabled: root.setupStep > 1 && !BackItUpStore.setupBusy
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: root.setupGo(-1)
+            }
+
+            PanelButton {
+              width: (parent.width - parent.spacing) / 2
+              label: root.setupStep === root.setupStepLabels.length
+                     ? (root.editingConfig ? "Save changes" : "Set up backups")
+                     : "Continue"
+              variant: root.setupStep === root.setupStepLabels.length ? "primary" : "default"
+              glyph: root.setupStep === root.setupStepLabels.length ? BackItUpStore.iconCheck : ""
+              enabled: !BackItUpStore.setupBusy
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: {
+                var err = root.setupStepError(root.setupStep)
+                if (err !== "") { root.setupValidationError = err; return }
+                root.setupValidationError = ""
+                if (root.setupStep < root.setupStepLabels.length) {
+                  root.setupGo(1)
+                  return
+                }
+                root.setupApply()
+              }
+            }
           }
         }
       }
@@ -1200,6 +1758,16 @@ Panel {
           showDirs: true
           showHidden: true
           folder: "file://" + root.pickerPath
+        }
+
+        // Lists the home folder once, so the setup form's suggestions can only
+        // offer folders that are really there. Never shown: it is a probe.
+        FolderListModel {
+          id: homeDirs
+          showDirs: true
+          showFiles: false
+          showHidden: false
+          folder: "file://" + (Quickshell.env("HOME") || "/")
         }
 
         Column {
