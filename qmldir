@@ -11,4 +11,7 @@ RestoreBrowser 1.0 RestoreBrowser.qml
 ManageBrowser 1.0 ManageBrowser.qml
 RestoreRow 1.0 RestoreRow.qml
 SnapshotRow 1.0 SnapshotRow.qml
+Stepper 1.0 Stepper.qml
+SourceChip 1.0 SourceChip.qml
+SegmentedControl 1.0 SegmentedControl.qml
 MenuRow 1.0 MenuRow.qml
