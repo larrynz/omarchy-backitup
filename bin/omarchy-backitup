@@ -276,6 +276,10 @@ now_ms() {
 OPT_DEST=""
 OPT_SNAPSHOT=""
 OPT_PATH=""
+# Every --path seen, in order. OPT_PATH stays the last one because `ls` takes
+# a single path; `restore` takes the whole list, since restic's --include is
+# repeatable and tick-a-few-files is the flow the browser actually wants.
+OPT_PATHS=()
 OPT_TARGET=""
 OPT_VAULT=""
 OPT_DRY_RUN=0
@@ -283,7 +287,7 @@ OPT_JSON=0
 declare -a POSITIONAL=()
 
 parse_options() {
-  OPT_DEST=""; OPT_SNAPSHOT=""; OPT_PATH=""; OPT_TARGET=""; OPT_VAULT=""; OPT_DRY_RUN=0; OPT_JSON=0
+  OPT_DEST=""; OPT_SNAPSHOT=""; OPT_PATH=""; OPT_PATHS=(); OPT_TARGET=""; OPT_VAULT=""; OPT_DRY_RUN=0; OPT_JSON=0
   OPT_FILE=""; OPT_PASSWORD_FILE=""
   POSITIONAL=()
   while [ "$#" -gt 0 ]; do
@@ -292,7 +296,7 @@ parse_options() {
       --file) OPT_FILE="${2:-}"; shift 2 || shift ;;
       --password-file) OPT_PASSWORD_FILE="${2:-}"; shift 2 || shift ;;
       --snapshot) OPT_SNAPSHOT="${2:-}"; shift 2 || shift ;;
-      --path) OPT_PATH="${2:-}"; shift 2 || shift ;;
+      --path) OPT_PATH="${2:-}"; OPT_PATHS+=("${2:-}"); shift 2 || shift ;;
       --target) OPT_TARGET="${2:-}"; shift 2 || shift ;;
       --vault) OPT_VAULT="${2:-}"; shift 2 || shift ;;
       --dry-run) OPT_DRY_RUN=1; shift ;;
@@ -2075,7 +2079,14 @@ cmd_restore() {
   demo_on && { jq -nc '{ok:true, target:"~/Restored/2026-08-24-1900"}'; return 0; }
   parse_options "$@"
   validate_snapshot_id "$OPT_SNAPSHOT"
-  validate_absolute_path "$OPT_PATH"
+
+  # One path is the common case and the one the tests pin; several come from
+  # ticking files in the browser. OPT_PATH is kept in step so a caller that
+  # passes one path behaves exactly as before.
+  local -a paths=()
+  if [ "${#OPT_PATHS[@]}" -gt 0 ]; then paths=("${OPT_PATHS[@]}"); else paths=("$OPT_PATH"); fi
+  local p
+  for p in "${paths[@]}"; do validate_absolute_path "$p"; done
 
   load_config
   select_destination "$OPT_DEST"
@@ -2095,13 +2106,18 @@ cmd_restore() {
   fi
   mkdir -p -- "$target" || die "could not create $target"
 
+  # restic takes --include once per path, so a queue of ticked files is still
+  # a single restore: one repository unlock, one progress stream, one target.
+  local -a includes=()
+  for p in "${paths[@]}"; do includes+=(--include "$p"); done
+
   private_dir "$STATE_DIR" logs
   progress_init restore
   progress_write running pre 1
   run_pre_command
   progress_write running restore 1
 
-  restic_run restore --json --include "$OPT_PATH" --target "$target" -- "$OPT_SNAPSHOT" 2>/dev/null |
+  restic_run restore --json "${includes[@]}" --target "$target" -- "$OPT_SNAPSHOT" 2>/dev/null |
     stream_restore
   restore_exit="$(number_or "${PIPESTATUS[0]}" 1)"
 
@@ -2110,9 +2126,12 @@ cmd_restore() {
 
   if [ "$restore_exit" = "0" ]; then
     # restic reproduces the full original path under the target, so this is
-    # where the restored item actually landed.
-    notify_restore_done "$target" "$target$OPT_PATH"
-    jq -nc --arg t "$target" --arg s "$target$OPT_PATH" '{ok:true, target:$t, restored:$s}'
+    # where the restored item actually landed. With several paths there is no
+    # single item to open, and the target root is the honest answer.
+    local landed="$target"
+    [ "${#paths[@]}" -eq 1 ] && landed="$target${paths[0]}"
+    notify_restore_done "$target" "$landed"
+    jq -nc --arg t "$target" --arg s "$landed" '{ok:true, target:$t, restored:$s}'
   else
     jq -nc --arg e "restic restore exited $restore_exit" '{ok:false, error:$e}'
   fi
@@ -2913,7 +2932,7 @@ omarchy-backitup $VERSION
   backup [--dest <name>] [--dry-run]  run a backup
   snapshots --dest <name> --json      list snapshots
   ls --dest <name> --snapshot <id> --path </abs> --json
-  restore --dest <name> --snapshot <id> --path </abs> [--target <dir>]
+  restore --dest <name> --snapshot <id> --path </abs> [--path </abs> ...] [--target <dir>]
   delete --dest <name> --snapshot <id>
                                       delete one snapshot and prune
   check --dest <name>                 verify repository integrity

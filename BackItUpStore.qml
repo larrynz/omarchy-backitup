@@ -38,6 +38,14 @@ Singleton {
   readonly property string iconList: "\uf0ca"         // a listing
   readonly property string iconSliders: "\uf1de"      // configuration
   readonly property string iconChevronRight: "\uf054"
+  readonly property string iconPlus: "\uf067"           // add a queue item / a folder
+  readonly property string iconSearch: "\uf002"         // the filter field
+  readonly property string iconTrash: "\uf1f8"          // delete a snapshot
+  readonly property string iconBox: "\uf187"             // a snapshot in the manage list
+  readonly property string iconX: "\uf00d"               // drop a chosen folder
+  readonly property string iconClock: "\uf017"           // idle: nothing scheduled
+  readonly property string iconRefresh: "\uf021"         // a backup in flight
+  readonly property string iconArrowLeft: "\uf060"       // back out of a view
 
   property string fontFamily: ""
 
@@ -722,14 +730,30 @@ Singleton {
   property string restoreTarget: ""
   property string restoreError: ""
 
-  function restore(snapshot, path) {
+  // `paths` is what to bring back: one path or several. restic takes
+  // --include once per path and they share a single repository unlock, a
+  // single target and a single progress stream, so ticking five files in the
+  // browser is one restore rather than five. A bare string still works,
+  // because the browser was written against that and a one-item queue should
+  // not need a different call site.
+  function restore(snapshot, paths) {
     var d = browseDest
     if (!d || restoreBusy) return
+
+    var list = []
+    if (paths instanceof Array) list = paths
+    else if (paths !== undefined && paths !== null && String(paths) !== "") list = [String(paths)]
+    if (list.length === 0) return
+
     restoreBusy = true
     restoreError = ""
     restoreTarget = ""
-    restoreProc.command = [root.cli, "restore", "--dest", String(d.name),
-                           "--snapshot", snapshot, "--path", path]
+
+    var command = [root.cli, "restore", "--dest", String(d.name),
+                   "--snapshot", String(snapshot)]
+    for (var i = 0; i < list.length; i++)
+      command.push("--path", String(list[i]))
+    restoreProc.command = command
     restoreProc.running = true
   }
 

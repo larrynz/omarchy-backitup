@@ -6,6 +6,7 @@ StatusHero 1.0 StatusHero.qml
 CheckTag 1.0 CheckTag.qml
 DestinationCard 1.0 DestinationCard.qml
 PanelButton 1.0 PanelButton.qml
+SnapshotChip 1.0 SnapshotChip.qml
 RestoreBrowser 1.0 RestoreBrowser.qml
 ManageBrowser 1.0 ManageBrowser.qml
 RestoreRow 1.0 RestoreRow.qml
