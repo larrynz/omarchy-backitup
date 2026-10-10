@@ -83,22 +83,29 @@ Panel {
   property bool setupSeeded: false
   property bool setupEverOpened: false
 
-  // Colour is the bar's whole vocabulary -- the icon carries nothing else --
-  // so each state gets its own hue rather than borrowing the accent. Running
-  // used to paint the same red as failed, which made "busy" and "broken"
-  // indistinguishable at a glance, the one thing the bar exists to prevent.
-  // Four states, not five: the bar is idle, protected, working or failed. A
-  // destination that is merely worth a look leaves the glyph in the bar's own
-  // foreground. An amber glyph reads on the dark theme surface but vanishes
-  // against a bright wallpaper -- and with the bar transparent the icon is
-  // drawn on the wallpaper, not the surface. `barForeground` is the shell's
-  // own contrast colour (it runs omarchy-bar-text-color against what is behind
-  // the bar), so it is dark over a bright wallpaper and light over a dark one.
-  // The panel and the tooltip carry the nuance; the bar stays legible.
+  // Colour is no longer the bar's vocabulary -- motion is. The bar is
+  // transparent, so the glyph is drawn straight onto whatever wallpaper is
+  // behind it, and every hue except red is at the mercy of that background: an
+  // amber or cyan glyph reads over a dark wallpaper and vanishes over a bright
+  // one. Red survives because "wrong" is the one message worth spending
+  // contrast on, and it is backed by the ! badge so it does not rest on colour
+  // alone. A static glyph is drawn in `barForeground`, the shell's own
+  // contrast colour (it runs omarchy-bar-text-color against what is behind the
+  // bar), so it is dark over a bright wallpaper and light over a dark one --
+  // the only way a glyph stays legible on every background.
+  //
+  // So three states, not four: still, working, wrong. "Working" carries itself
+  // as rotation rather than as a third hue. It used to be an opacity pulse,
+  // which faded the glyph to 45% -- disappearing on a busy wallpaper at exactly
+  // the moment it was trying to say something, and dimming the one thing in the
+  // bar that has to be legible at all times.
+  //
+  // "Worth a look" stays neutral, so it is signalled in the panel and the
+  // tooltip but not in the bar. That is the one deliberate gap: warn cannot
+  // afford a colour of its own here, and it is not worth a motion channel.
   readonly property color barIconColor: {
     var s = BackItUpStore.overallStatus
     if (!BackItUpStore.configured) return Qt.darker(barForeground, 1.9)
-    if (s === "busy") return StatusPalette.busy
     if (s === "bad") return urgent
     return barForeground
   }
@@ -502,7 +509,15 @@ Panel {
 
     iconComponent: Component {
       Item {
+        // The one glyph, at full opacity in every state. Rotation while a
+        // backup runs is the whole "busy" signal: motion reads on any
+        // wallpaper, a faded glyph does not, and it costs no colour. The angle
+        // is the only thing that moves -- nothing here dims, scales or changes
+        // hue, so the glyph is as legible mid-run as at rest. Deliberately not
+        // a percentage either: a number in the bar would demand to be read,
+        // where a turn only says "working" and the panel carries the detail.
         Text {
+          id: barGlyph
           anchors.centerIn: parent
           text: BackItUpStore.iconBackItUp
           textFormat: Text.PlainText
@@ -511,17 +526,21 @@ Panel {
           renderType: Text.NativeRendering
           color: root.barIconColor
 
-          // A slow pulse while a backup runs. Deliberately not a percentage in
-          // the bar: the number would demand to be read, where the pulse only
-          // says "busy" and the panel carries the detail.
-          SequentialAnimation on opacity {
+          // RotationAnimator rather than NumberAnimation: it drives the angle
+          // on the render thread, so the turn stays smooth at the bar's repaint
+          // rate instead of stepping with the GUI thread. Same idiom the shell's
+          // own weather panel uses for its spinning glyph.
+          RotationAnimator on rotation {
             running: BackItUpStore.anyRunning
+            from: 0
+            to: 360
+            duration: 1600
             loops: Animation.Infinite
-            alwaysRunToEnd: true
-            NumberAnimation { from: 1.0; to: 0.45; duration: 900; easing.type: Easing.InOutQuad }
-            NumberAnimation { from: 0.45; to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
+            // Come to rest upright. Without this the glyph freezes at whatever
+            // angle the run happened to end on and stays there, which reads as
+            // a rendering fault rather than as idle.
+            onRunningChanged: if (!running) barGlyph.rotation = 0
           }
-          onVisibleChanged: if (!BackItUpStore.anyRunning) opacity = 1.0
         }
 
         // Exclamation badge, pinned to the glyph's top right.
