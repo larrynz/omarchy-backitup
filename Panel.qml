@@ -86,6 +86,78 @@ Panel {
     return barForeground
   }
 
+  // --- the verdict ------------------------------------------------------
+  //
+  // One sentence at the top of the panel answers "am I safe?" before any
+  // number appears. Derived here rather than inside the hero, so the rule --
+  // which state outranks which -- sits in one place beside the store's own
+  // classification, and the view only paints what it is handed.
+  function failedCount() {
+    var n = 0
+    for (var i = 0; i < BackItUpStore.destinations.length; i++)
+      if (BackItUpStore.destinationFailed(BackItUpStore.destinations[i])) n++
+    return n
+  }
+
+  function compositeVerdict() {
+    var S = BackItUpStore
+
+    if (S.configInvalid) {
+      return { state: "bad", title: "Configuration problem",
+               sub: S.configError, subStrong: "", meta: "", glyph: S.iconAlert }
+    }
+    if (!S.configured || S.destinations.length === 0) {
+      return { state: "idle", title: "No backups yet",
+               sub: "Set one up and the panel walks you through it",
+               subStrong: "", meta: "", glyph: S.iconShield }
+    }
+
+    if (S.anyRunning) {
+      var run = S.runningDestination
+      var pr = run ? run.progress : null
+      var bytes = (pr && pr.total_bytes)
+        ? S.humanBytes(pr.bytes_done) + " / " + S.humanBytes(pr.total_bytes)
+        : ""
+      return { state: "busy", title: "Backing up",
+               sub: run ? S.destinationLabel(run) + (bytes ? " \u00b7 " : "") : "",
+               subStrong: bytes,
+               meta: run ? S.workingPhrase(run.name) + "\u2026" : "",
+               glyph: S.iconPlay }
+    }
+
+    if (S.anyFailed) {
+      var n = root.failedCount()
+      var fail = S.failedDestination
+      return { state: "bad",
+               title: S.multiple ? n + " of " + S.destinations.length + " need attention"
+                                 : "Backup failed",
+               sub: fail ? S.destinationLabel(fail) : "",
+               subStrong: "",
+               meta: fail && fail.last_run ? S.menuDate(fail.last_run.finished_at) : "",
+               glyph: S.iconAlert }
+    }
+
+    if (S.overallStatus === "warn") {
+      var warn = S.attentionDestination
+      var when = S.active && S.active.last_run ? S.active.last_run.finished_at : ""
+      return { state: "warn", title: "Needs a look",
+               sub: warn ? S.destinationLabel(warn) : "",
+               subStrong: "",
+               meta: "Last backup " + S.relativeTime(when),
+               glyph: S.iconAlert }
+    }
+
+    var latest = S.active && S.active.last_run ? S.active.last_run.finished_at : ""
+    return { state: "ok", title: "Protected",
+             sub: S.multiple ? "All " + S.destinations.length + " destinations up to date"
+                             : "Last backup ",
+             subStrong: S.multiple ? "" : S.relativeTime(latest),
+             meta: S.multiple ? "" : S.menuDate(latest),
+             glyph: S.iconShield }
+  }
+
+  readonly property var verdict: root.compositeVerdict()
+
   // Panel is a bare Item with no size of its own, so without this the bar
   // hands the widget zero width -- and a zero-width widget still paints its
   // children, so it looks fine and is simply not clickable. Derive the size
@@ -319,7 +391,7 @@ Panel {
     // happened to be showing when it opened.
     readonly property int desiredWidth:
       Style.space(root.browsing || root.managing ? 460
-                  : (root.settingUp ? 420 : 280))
+                  : (root.settingUp ? 420 : 332))
     contentWidth: Math.min(desiredWidth,
                            panel.availableCardWidth > 0 ? panel.availableCardWidth : desiredWidth)
     contentHeight: panel.fittedContentHeight(
@@ -391,150 +463,48 @@ Panel {
         Column {
           id: mainColumn
           width: mainScroll.width
-          spacing: 0
+          spacing: Style.space(12)
+          topPadding: Style.space(2)
+          bottomPadding: Style.space(2)
 
-          // A menu, not a dashboard: a dimmed two-line status at the top, then
-          // plain left-aligned actions separated by hairlines. Modelled on the
-          // macOS Time Machine menu-bar item, which says what it knows in two
-          // lines and then gets out of the way.
+          // --- the verdict ------------------------------------------------
 
-          // --- status header ---------------------------------------------
-
-          Text {
+          StatusHero {
             width: parent.width
-            bottomPadding: Style.space(8)
-            text: {
-              if (BackItUpStore.configInvalid) return "There is a problem with your configuration"
-              if (!BackItUpStore.configured) return "No backups are set up yet"
-              if (BackItUpStore.anyRunning) return "Backing up"
-              if (BackItUpStore.anyFailed) return "A backup failed"
-              return "Backups"
-            }
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: (BackItUpStore.anyFailed || BackItUpStore.configInvalid)
-                   ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            state: root.verdict.state
+            verdict: root.verdict.title
+            sub: root.verdict.sub
+            subStrong: root.verdict.subStrong
+            meta: root.verdict.meta
+            glyph: root.verdict.glyph
+            foreground: root.foreground
+            fontFamily: root.fontFamily
           }
 
-          // Only shown when the configuration itself is the problem, because
-          // then there is no list to explain anything.
-          Text {
-            width: parent.width
-            visible: text !== ""
-            bottomPadding: visible ? Style.space(8) : 0
-            text: {
-              if (BackItUpStore.configInvalid) return BackItUpStore.configError
-              if (!BackItUpStore.configured) return "Set one up below and the panel walks you through it"
-              return ""
-            }
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: BackItUpStore.configInvalid ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
+          // --- destinations -----------------------------------------------
 
-          // Every destination, always, even when there is only one. One
-          // layout means the panel does not rearrange itself the day you add a
-          // second drive, and "which one is active" stops being a question:
-          // they all run on their own schedule and they all matter.
           Column {
             width: parent.width
-            spacing: Style.space(6)
-            bottomPadding: Style.space(8)
+            spacing: Style.space(8)
+            visible: BackItUpStore.destinations.length > 0
 
             Repeater {
               model: BackItUpStore.destinations
 
-              Column {
+              DestinationCard {
                 width: parent.width
-                spacing: Style.space(1)
-
-                Item {
-                  width: parent.width
-                  height: Style.space(18)
-
-                  Text {
-                    anchors.left: parent.left
-                    anchors.right: stateText.left
-                    anchors.rightMargin: Style.space(8)
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: BackItUpStore.destinationLabel(modelData)
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-
-                  Text {
-                    id: stateText
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: BackItUpStore.destinationState(modelData)
-                    textFormat: Text.PlainText
-                    color: BackItUpStore.destinationFailed(modelData) ? root.urgent : root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-                }
-
-                // The audit that runs after every backup, and its verdict
-                // on the newest one. Hidden while a run is in flight: the
-                // verdict in last_audit belongs to the previous run, and
-                // showing it beside a progress percentage claims the backup
-                // now running has already been audited. It comes back when
-                // record_status writes the new one.
-                Text {
-                  width: parent.width
-                  visible: !modelData.running && text !== ""
-                  text: BackItUpStore.destinationAudit(modelData)
-                  textFormat: Text.PlainText
-                  elide: Text.ElideRight
-                  color: BackItUpStore.auditHasProblems(modelData) ? root.urgent : root.dimmer
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-
-                // The system snapshot paired with the newest backup, when
-                // the destination asked for one. Urgent when it did not
-                // happen: a toggle that looks on must explain why nothing
-                // was taken. The reason can name the fix, so it wraps rather
-                // than elides.
-                Text {
-                  width: parent.width
-                  visible: text !== ""
-                  text: BackItUpStore.destinationSnapshot(modelData)
-                  textFormat: Text.PlainText
-                  wrapMode: Text.WordWrap
-                  color: BackItUpStore.destinationSnapshotProblem(modelData) ? root.urgent : root.dimmer
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-
-                // After a failure the useful number is not how big the
-                // repository is, but how old your newest good copy now is.
-                Text {
-                  width: parent.width
-                  visible: text !== ""
-                  text: BackItUpStore.destinationDetail(modelData)
-                  textFormat: Text.PlainText
-                  elide: Text.ElideRight
-                  color: BackItUpStore.destinationFailed(modelData) ? root.dim : root.dimmer
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
+                destination: modelData
+                foreground: root.foreground
+                fontFamily: root.fontFamily
               }
             }
           }
 
-          // --- progress ----------------------------------------------------
+          // --- progress for a run in flight --------------------------------
 
           Rectangle {
             width: parent.width
-            visible: BackItUpStore.running
+            visible: BackItUpStore.anyRunning
             height: visible ? Style.space(3) : 0
             radius: height / 2
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
@@ -542,7 +512,7 @@ Panel {
             Rectangle {
               height: parent.height
               radius: parent.radius
-              color: root.accent
+              color: StatusPalette.busy
               width: {
                 var pr = BackItUpStore.progress
                 if (!pr || pr.percent === undefined || pr.percent === null) return 0
@@ -552,49 +522,11 @@ Panel {
             }
           }
 
-          Text {
-            width: parent.width
-            visible: BackItUpStore.running && text !== ""
-            topPadding: visible ? Style.space(4) : 0
-            bottomPadding: visible ? Style.space(4) : 0
-            text: {
-              var pr = BackItUpStore.progress
-              if (!pr || !pr.total_bytes) return ""
-              return BackItUpStore.humanBytes(pr.bytes_done) + " of "
-                     + BackItUpStore.humanBytes(pr.total_bytes)
-            }
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          // --- actions -----------------------------------------------------
-
-          PanelSeparator { width: parent.width; foreground: root.foreground }
-
-          MenuRow {
-            width: parent.width
-            visible: BackItUpStore.configured && BackItUpStore.unitsInstalled
-            label: BackItUpStore.anyRunning ? "Stop This Backup" : "Back Up Now"
-            destructive: BackItUpStore.anyRunning
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: {
-              if (BackItUpStore.anyRunning) stopConfirm.opened = true
-              else if (BackItUpStore.multiple) BackItUpStore.startAllBackups()
-              else BackItUpStore.startBackup()
-            }
-          }
-
           // Rather than an action that silently does nothing, say what is
           // missing. This is the state every fresh install starts in.
           Text {
             width: parent.width
             visible: BackItUpStore.configured && !BackItUpStore.unitsInstalled
-            topPadding: visible ? Style.space(6) : 0
-            bottomPadding: visible ? Style.space(6) : 0
             text: "Run \u2018omarchy-backitup install\u2019 once to enable backups"
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -603,70 +535,142 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
-          PanelSeparator {
-            width: parent.width
-            foreground: root.foreground
-            visible: BackItUpStore.configured
-          }
+          // --- actions ----------------------------------------------------
 
-          MenuRow {
+          PanelButton {
             width: parent.width
-            visible: BackItUpStore.configured
-            label: "Restore Files\u2026"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: {
-              root.browsing = true
-              if (!BackItUpStore.snapshotsLoaded || BackItUpStore.snapshotsStale())
-                BackItUpStore.loadSnapshots()
+            visible: !BackItUpStore.configInvalid
+                     && (!BackItUpStore.configured || BackItUpStore.unitsInstalled)
+            variant: (BackItUpStore.configured && BackItUpStore.anyRunning)
+                     ? "danger" : "primary"
+            glyph: {
+              if (!BackItUpStore.configured) return BackItUpStore.iconShield
+              if (BackItUpStore.anyRunning) return BackItUpStore.iconStop
+              return BackItUpStore.iconPlay
             }
-          }
-
-          MenuRow {
-            width: parent.width
-            visible: BackItUpStore.configured
-            label: "Manage Backups\u2026"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: {
-              root.managing = true
-              if (!BackItUpStore.snapshotsLoaded || BackItUpStore.snapshotsStale())
-                BackItUpStore.loadSnapshots()
+            label: {
+              if (!BackItUpStore.configured) return "Set Up Backups"
+              if (BackItUpStore.anyRunning) return "Stop This Backup"
+              return BackItUpStore.multiple ? "Back Up All" : "Back Up Now"
             }
-          }
-
-          PanelSeparator { width: parent.width; foreground: root.foreground }
-
-          // Small changes to an existing setup should not mean retyping
-          // everything: this opens the setup form pre-filled from the first
-          // configured destination, and Apply merges by name, so untouched
-          // settings (retention, pre_command, the password) survive.
-          MenuRow {
-            width: parent.width
-            visible: BackItUpStore.configured && BackItUpStore.destinations.length > 0
-            label: "Edit Configuration\u2026"
             foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: root.editConfig()
-          }
-
-          PanelSeparator {
-            width: parent.width; foreground: root.foreground
-            visible: BackItUpStore.configured
-          }
-
-          MenuRow {
-            width: parent.width
-            label: (BackItUpStore.configured || BackItUpStore.configInvalid)
-                   ? "Open Configuration\u2026" : "Set Up Backups\u2026"
-            foreground: root.foreground
+            accent: root.accent
             fontFamily: root.fontFamily
             onClicked: {
-              if (BackItUpStore.configured || BackItUpStore.configInvalid) {
-                BackItUpStore.openConfig()
-                root.close()
-              } else {
+              if (!BackItUpStore.configured) {
                 root.settingUp = true
+              } else if (BackItUpStore.anyRunning) {
+                stopConfirm.opened = true
+              } else if (BackItUpStore.multiple) {
+                BackItUpStore.startAllBackups()
+              } else {
+                BackItUpStore.startBackup()
+              }
+            }
+          }
+
+          // A configuration the CLI will reject has no "back up now" to offer:
+          // the one useful thing left is to open it and fix it.
+          PanelButton {
+            width: parent.width
+            visible: BackItUpStore.configInvalid
+            variant: "danger"
+            glyph: BackItUpStore.iconSliders
+            label: "Open Configuration"
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: {
+              BackItUpStore.openConfig()
+              root.close()
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: BackItUpStore.configured
+
+            PanelButton {
+              width: (parent.width - parent.spacing) / 2
+              glyph: BackItUpStore.iconRestore
+              label: "Restore"
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: {
+                root.browsing = true
+                if (!BackItUpStore.snapshotsLoaded || BackItUpStore.snapshotsStale())
+                  BackItUpStore.loadSnapshots()
+              }
+            }
+
+            PanelButton {
+              width: (parent.width - parent.spacing) / 2
+              glyph: BackItUpStore.iconList
+              label: "Manage"
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: {
+                root.managing = true
+                if (!BackItUpStore.snapshotsLoaded || BackItUpStore.snapshotsStale())
+                  BackItUpStore.loadSnapshots()
+              }
+            }
+          }
+
+          // The sideways errands: changing the setup and reading the last
+          // log. Set apart by a hairline and drawn as ghosts, so they never
+          // look like the decision the primary button is.
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: (BackItUpStore.configured && BackItUpStore.destinations.length > 0)
+                     || (BackItUpStore.configured && BackItUpStore.lastRun
+                         && BackItUpStore.lastRun.log_file)
+
+            Rectangle {
+              width: parent.width
+              height: Style.space(1)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              PanelButton {
+                id: editConfigButton
+                variant: "ghost"
+                glyph: BackItUpStore.iconSliders
+                label: "Edit configuration"
+                visible: BackItUpStore.configured && BackItUpStore.destinations.length > 0
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onClicked: root.editConfig()
+              }
+
+              Item {
+                width: Math.max(0, parent.width
+                                   - (editConfigButton.visible ? editConfigButton.width : 0)
+                                   - (logButton.visible ? logButton.width : 0)
+                                   - parent.spacing * 2)
+                height: 1
+              }
+
+              PanelButton {
+                id: logButton
+                variant: "ghost"
+                label: "Log"
+                glyph: BackItUpStore.iconChevronRight
+                visible: BackItUpStore.configured && BackItUpStore.lastRun
+                         && BackItUpStore.lastRun.log_file
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onClicked: BackItUpStore.openLog()
               }
             }
           }

@@ -29,6 +29,15 @@ Singleton {
   readonly property string iconFolder: "\uf07b"
   readonly property string iconFile: "\uf15b"
   readonly property string iconUp: "\uf148"           // level up
+  readonly property string iconShield: "\uf132"       // a healthy backup
+  readonly property string iconCheck: "\uf00c"        // a verified tag
+  readonly property string iconAlert: "\uf071"        // a failed run
+  readonly property string iconPlay: "\uf04b"         // start a backup
+  readonly property string iconStop: "\uf04d"         // stop the run in flight
+  readonly property string iconRestore: "\uf019"      // download
+  readonly property string iconList: "\uf0ca"         // a listing
+  readonly property string iconSliders: "\uf1de"      // configuration
+  readonly property string iconChevronRight: "\uf054"
 
   property string fontFamily: ""
 
@@ -180,6 +189,31 @@ Singleton {
     return false
   }
 
+  // The destination a one-line verdict should name. `active` is only the
+  // first destination, which is the wrong one to describe the moment a
+  // second drive is the one that broke or the one working.
+  readonly property var runningDestination: {
+    for (var i = 0; i < destinations.length; i++)
+      if (destinations[i].running) return destinations[i]
+    return null
+  }
+
+  readonly property var failedDestination: {
+    for (var i = 0; i < destinations.length; i++)
+      if (destinationFailed(destinations[i])) return destinations[i]
+    return null
+  }
+
+  // The first destination that is not simply fine: a failed run, a broken
+  // audit, a system snapshot that did not happen.
+  readonly property var attentionDestination: {
+    for (var i = 0; i < destinations.length; i++) {
+      var s = destinationStatus(destinations[i])
+      if (s === "bad" || s === "warn") return destinations[i]
+    }
+    return null
+  }
+
   // What one destination says about itself in the list.
   function destinationLabel(d) {
     return d.display_name ? String(d.display_name) : String(d.name)
@@ -274,6 +308,24 @@ Singleton {
     if (d.last_run.data_added_bytes)
       parts.push(humanBytes(d.last_run.data_added_bytes) + " added")
     return parts.join(" \u00b7 ")
+  }
+
+  // The quantities under a destination name, as value/label pairs. Split
+  // rather than one string so a view can set the numbers in a brighter
+  // weight than the words around them -- the numbers are what you scan for.
+  // Empty after a failure or a run in flight: there the useful line is how
+  // old the newest good copy is, which destinationDetail already says.
+  function destinationMetrics(d) {
+    var out = []
+    if (!d || d.running || destinationFailed(d) || !d.last_run) return out
+    if (d.repo_size_bytes)
+      out.push({ value: humanBytes(d.repo_size_bytes), label: "stored" })
+    if (d.snapshot_count)
+      out.push({ value: String(d.snapshot_count),
+                 label: Number(d.snapshot_count) === 1 ? "snapshot" : "snapshots" })
+    if (d.last_run.data_added_bytes)
+      out.push({ value: humanBytes(d.last_run.data_added_bytes), label: "added" })
+    return out
   }
 
   function destinationFailed(d) {
