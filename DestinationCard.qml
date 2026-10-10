@@ -172,7 +172,9 @@ Rectangle {
 
     // A system snapshot that was asked for and not taken needs its reason
     // kept -- the tag says it broke, this says why, and the fix is usually
-    // named in the reason.
+    // named in the reason. So this paragraph is never elided: a truncated
+    // "add the snapper group ACL in /etc/snapper/configs/root" is exactly the
+    // half that would have fixed it.
     Text {
       width: parent.width
       leftPadding: Style.space(29)
@@ -182,8 +184,6 @@ Rectangle {
       text: root.snapshotProblemText
       textFormat: Text.PlainText
       wrapMode: Text.WordWrap
-      maximumLineCount: 3
-      elide: Text.ElideRight
       color: StatusPalette.bad
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
