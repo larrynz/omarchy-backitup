@@ -568,9 +568,14 @@ Panel {
     // fittedContentWidth inside the binding: that form evaluates once at open
     // and never re-runs, so the panel would keep the width of whichever view
     // happened to be showing when it opened.
+    // The wizard runs wider than the status view because it is a form, not a
+    // read-out: step 3's toggle label and step 4's five-segment picker both
+    // elide at 420, and a form that hides its own option names is worse than a
+    // wide one. Matches the browse/manage width, so it is a width this panel
+    // already wears.
     readonly property int desiredWidth:
-      Style.space(root.browsing || root.managing ? 460
-                  : (root.settingUp ? 420 : 332))
+      Style.space(root.browsing || root.managing || root.settingUp ? 460
+                  : 332)
     contentWidth: Math.min(desiredWidth,
                            panel.availableCardWidth > 0 ? panel.availableCardWidth : desiredWidth)
     contentHeight: panel.fittedContentHeight(
@@ -1359,11 +1364,16 @@ Panel {
             // A command is not a secret -- the config holds it in plain text --
             // so switching to that mode reveals the field rather than reusing
             // the masked one.
+            // Both states lead with the mode they are in, then the action --
+            // the shape "Advanced -- edit the systemd expression" already uses
+            // one step down. Spelled out as sentences these ran long enough to
+            // elide, and a toggle whose label does not fit is a toggle that
+            // does not say what it is.
             MenuRow {
               width: parent.width
               label: root.setupPassIsCommand
-                     ? "Fetched with a command \u2014 click to store in a key file instead"
-                     : "Stored in a key file \u2014 click to fetch with a command instead"
+                     ? "Command \u2014 click to store in a key file instead"
+                     : "Key file \u2014 click to fetch with a command instead"
               foreground: root.foreground
               fontFamily: root.fontFamily
               onClicked: root.setupPassIsCommand = !root.setupPassIsCommand
