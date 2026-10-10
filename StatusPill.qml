@@ -9,11 +9,21 @@ Rectangle {
 
   property string text: ""
   property string state: "idle"
+  // An explicit hue, for markers that are not health states -- the "Latest"
+  // tag on the newest backup, which is about recency, not about whether the
+  // backup worked. StatusPalette stays semantic; this stays a pill.
+  // "transparent" reads as unset, since a zero alpha is not a colour anyone
+  // would ask a pill to be.
+  property color toneOverride: "transparent"
   property color foreground: Color.foreground
   property string fontFamily: Style.font.family
 
-  readonly property color tone: StatusPalette.color(root.state)
-  readonly property bool neutral: root.state !== "ok" && root.state !== "busy"
+  readonly property bool hasToneOverride: root.toneOverride.a > 0
+  readonly property color tone: root.hasToneOverride
+                                ? root.toneOverride
+                                : StatusPalette.color(root.state)
+  readonly property bool neutral: !root.hasToneOverride
+                                  && root.state !== "ok" && root.state !== "busy"
                                   && root.state !== "warn" && root.state !== "bad"
 
   implicitWidth: label.implicitWidth + Style.space(7) * 2

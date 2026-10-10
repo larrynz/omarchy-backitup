@@ -1139,6 +1139,20 @@ cmd_status() {
     local ssnap
     ssnap="$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | (.system_snapshot == true)' <<<"$CONFIG_JSON")"
 
+    # The retention policy that actually applies to this destination, resolved
+    # the way keep_value resolves it: the destination's own block wins, then
+    # the global block, then the built-in defaults. The panel prints this so a
+    # short snapshot list reads as the policy working rather than as backups
+    # going missing.
+    local ret
+    ret="$(jq -c --arg n "$name" '
+      (.retention // {}) as $g
+      | ((.destinations[] | select(.name == $n) | .retention) // {}) as $d
+      | {daily:   ($d.daily   // $g.daily   // 7),
+         weekly:  ($d.weekly  // $g.weekly  // 4),
+         monthly: ($d.monthly // $g.monthly // 12),
+         yearly:  ($d.yearly  // $g.yearly  // 3)}' <<<"$CONFIG_JSON")"
+
     out="$(jq -c \
       --arg name "$name" \
       --arg label "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .display_name // $n' <<<"$CONFIG_JSON")" \
@@ -1150,11 +1164,13 @@ cmd_status() {
       --arg pwmode "$pwmode" \
       --arg pwc "$pwc" \
       --argjson ssnap "$ssnap" \
+      --argjson ret "$ret" \
       '. + [$stored + {name:$name, display_name:$label,
                        schedule:(if $schedule == "" then null else $schedule end),
                        running:$running,
                        password_mode:$pwmode,
                        system_snapshot_enabled:$ssnap,
+                       retention:$ret,
                        password_command:(if $pwc == "" then null else $pwc end),
                        repository_display:(if $repo == "" then ($stored.repository_display // "") else $repo end),
                        progress:(if $running then $progress else null end)}]' <<<"$out")"
