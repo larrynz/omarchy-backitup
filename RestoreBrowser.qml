@@ -128,6 +128,17 @@ FocusScope {
   }
 
   property string snapshotId: ""
+
+  // Same Dropdown caveat as Manage Backups: picking an option assigns the
+  // Dropdown's own `value`, which kills the `value: root.snapshotId` binding.
+  // The reconcile in onSnapshotsChanged below re-picks the newest backup after
+  // a delete, and without this the picker kept showing the deleted snapshot's
+  // raw id instead of the date.
+  onSnapshotIdChanged: {
+    if (snapshotPicker && snapshotPicker.value !== root.snapshotId)
+      snapshotPicker.value = root.snapshotId
+  }
+
   property string rootPath: ""
   property var selected: null
   property string filter: ""
@@ -355,6 +366,7 @@ FocusScope {
       }
 
       Dropdown {
+        id: snapshotPicker
         width: BackItUpStore.destinations.length > 1
                ? (parent.width - Style.space(46)) / 2
                : parent.width - Style.space(38)

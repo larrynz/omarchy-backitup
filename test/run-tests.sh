@@ -1164,6 +1164,16 @@ AFTER="$($CLI snapshots --dest test --json | jq -r '.snapshots | length')"
 [ "$AFTER" = "$((BEFORE - 1))" ]
 check $? "the snapshot list is shorter by one"
 
+# The panel's snapshot count and repository size come from status.json, and a
+# delete moves both without record_status running. The CLI rewrites them after
+# the prune, so the panel is truthful at its next poll rather than at the next
+# nightly backup.
+jq -e --argjson n "$AFTER" '.destinations.test.snapshot_count == $n' "$STATUS" >/dev/null 2>&1
+check $? "a delete refreshes the snapshot count in status.json"
+
+jq -e '.destinations.test.repo_size_bytes > 0' "$STATUS" >/dev/null 2>&1
+check $? "a delete keeps a real repository size in status.json"
+
 # The delete is a manual action, not a backup: last_run keeps the verdict the
 # backup wrote, and a deletion does not disturb it.
 jq -e '.destinations.test.last_run.result == "ok"' "$STATUS" >/dev/null 2>&1

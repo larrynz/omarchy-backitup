@@ -1832,6 +1832,39 @@ last_error_line() {
   printf '%s' "${line:0:180}"
 }
 
+# The two numbers the panel shows beside a destination, split out because a
+# delete changes both without running a backup. Both reads are bounded before
+# jq rather than after -- jq holds whatever the pipe hands it. Without
+# --latest the count asked the repository for every snapshot it had, purely to
+# count them. A cut stream makes jq fail, and number_or turns that into null,
+# which is what the field means anyway.
+repo_snapshot_count() {
+  number_or "$(restic_run snapshots --json --latest "$SNAPSHOT_CAP" 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))" | jq -r 'length' 2>/dev/null)" null
+}
+
+repo_repo_size() {
+  number_or "$(restic_run stats --mode raw-data --json 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))" | jq -r '.total_size // empty' 2>/dev/null)" null
+}
+
+# Recomputes the two status.json fields a delete moves: forget drops a
+# snapshot and --prune reclaims its data, so the count and the size both change
+# without record_status running. Without this the panel kept the pre-delete
+# figures until the next nightly backup.
+refresh_repo_stats() {
+  local count size status
+  [ -f "$STATUS_FILE" ] || return 0
+  count="$(repo_snapshot_count)"
+  size="$(repo_repo_size)"
+  [ "$count" != "null" ] || return 0
+  status="$(load_status)"
+  jq --arg name "$DEST_NAME" --argjson count "$count" --argjson size "$size" '
+    .destinations[$name] = ((.destinations[$name] // {}) + {snapshot_count: $count})
+    | if $size != null then .destinations[$name].repo_size_bytes = $size else . end
+    ' <<<"$status" | write_private "$STATUS_FILE" ||
+    printf 'could not update status.json\n' >&2
+  return 0
+}
+
 record_status() {
   local started="$1" started_epoch="$2" exit_code="$3" result="$4" summary="$5"
   # The system snapshot that preceded the backup, if this destination asked
@@ -1860,15 +1893,8 @@ record_status() {
   snapshot_count=null
   repo_size=null
   if [ "$result" != "failed" ]; then
-    # jq holds whatever the pipe hands it, so the read is bounded before jq
-    # rather than after. Without --latest this asked the repository for every
-    # snapshot it had, purely to count them.
-    # jq holds whatever the pipe hands it, so the read is bounded before jq
-    # rather than after. Without --latest this asked the repository for every
-    # snapshot it had, purely to count them. A cut stream makes jq fail, and
-    # number_or turns that into null, which is what the field means anyway.
-    snapshot_count="$(number_or "$(restic_run snapshots --json --latest "$SNAPSHOT_CAP" 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))" | jq -r 'length' 2>/dev/null)" null)"
-    repo_size="$(number_or "$(restic_run stats --mode raw-data --json 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))" | jq -r '.total_size // empty' 2>/dev/null)" null)"
+    snapshot_count="$(repo_snapshot_count)"
+    repo_size="$(repo_repo_size)"
   fi
 
   jq \
@@ -2138,6 +2164,11 @@ cmd_delete() {
 
   if [ "$delete_exit" = "0" ]; then
     notify_delete_done "$OPT_SNAPSHOT"
+    # The panel reads its snapshot count and repository size from status.json,
+    # and both moved with the forget and the prune just now. Rewrite them here
+    # so the panel is truthful when it next polls instead of at the next
+    # backup.
+    refresh_repo_stats
     jq -nc --arg s "$OPT_SNAPSHOT" '{ok:true, deleted:$s}'
   else
     jq -nc --arg e "restic forget exited $delete_exit" '{ok:false, error:$e}'

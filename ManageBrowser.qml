@@ -83,6 +83,18 @@ FocusScope {
 
   property string snapshotId: ""
 
+  // The shell's Dropdown assigns its own `value` when an option is picked,
+  // and that imperative assignment removes the `value: root.snapshotId`
+  // binding on the picker. From then on the picker stops following this
+  // property -- so the reconcile below, which re-picks the newest backup after
+  // a delete, left the deleted snapshot's raw id on screen, because the old id
+  // no longer matched any option. Drive the visible value from here instead of
+  // trusting the binding to survive the first pick.
+  onSnapshotIdChanged: {
+    if (snapshotPicker && snapshotPicker.value !== root.snapshotId)
+      snapshotPicker.value = root.snapshotId
+  }
+
   function currentSnapshot() {
     for (var i = 0; i < BackItUpStore.snapshots.length; i++)
       if (BackItUpStore.snapshots[i].id === root.snapshotId)
@@ -174,6 +186,7 @@ FocusScope {
       // read the summary, and the delete row underneath is the only thing
       // that reaches the command.
       Dropdown {
+        id: snapshotPicker
         width: BackItUpStore.destinations.length > 1
                ? (parent.width - Style.space(46)) / 2
                : parent.width - Style.space(38)

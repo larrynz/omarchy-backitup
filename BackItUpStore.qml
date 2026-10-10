@@ -711,6 +711,11 @@ Singleton {
         // move on a delete. Reload it now, or the date the user just deleted
         // would sit in the picker until the next backup.
         root.loadSnapshots()
+        // The delete also changed the two numbers the main panel reads from
+        // status.json -- the snapshot count and the repository size, which the
+        // CLI rewrites after the prune. Pull the new status in now rather than
+        // leaving the pre-delete figures on screen until the next poll.
+        root.refresh()
       }
     }
   }

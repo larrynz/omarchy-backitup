@@ -476,14 +476,14 @@ Panel {
                 }
 
                 // The audit that runs after every backup, and its verdict
-                // on the newest one. It sits above "Last good backup" so the
-                // lines read in order: the newest backup, then its audit,
-                // then how old the newest good copy is. Urgent when it found
-                // unreadable paths -- that is data the backup cannot reach,
-                // the same colour as a failed run for the same reason.
+                // on the newest one. Hidden while a run is in flight: the
+                // verdict in last_audit belongs to the previous run, and
+                // showing it beside a progress percentage claims the backup
+                // now running has already been audited. It comes back when
+                // record_status writes the new one.
                 Text {
                   width: parent.width
-                  visible: text !== ""
+                  visible: !modelData.running && text !== ""
                   text: BackItUpStore.destinationAudit(modelData)
                   textFormat: Text.PlainText
                   elide: Text.ElideRight
