@@ -866,6 +866,58 @@ check $? "the merge preserves password_file"
 [ "$(jq -r '.destinations[] | select(.name=="setup-test") | .schedule' "$C")" = "Mon *-*-* 03:00:00" ]
 check $? "the merge takes the document's schedule"
 
+# A retention policy in the document lands on the destination -- which is the
+# first place keep_value looks, so a destination that sets its own policy is
+# not overridden by the config's global block. The setup form's review step
+# sends this block, so a backup policy can be set without hand-editing JSON.
+OUT="$(printf '%s' '{"name":"setup-test","repository":"'"$WORK"'/setup-repo","source":"'"$HOME"'","retention":{"daily":5,"weekly":3,"monthly":9,"yearly":2}}' | $CLI apply-setup 2>&1)"
+[ "$(jq -c '.destinations[] | select(.name=="setup-test") | .retention' "$C")" = '{"daily":5,"weekly":3,"monthly":9,"yearly":2}' ]
+check $? "apply-setup stores a retention policy on the destination"
+
+# And the policy the panel reads back is the destination's own, not the
+# global block and not the built-in defaults.
+[ "$($CLI status --json | jq -c '.destinations[] | select(.name=="setup-test") | .retention')" = '{"daily":5,"weekly":3,"monthly":9,"yearly":2}' ]
+check $? "status reports the destination's own retention"
+
+# Absence means unchanged, like the snapshot toggle: a document that leaves
+# the field out must not reset a policy somebody tuned.
+OUT="$(printf '%s' '{"name":"setup-test","repository":"'"$WORK"'/setup-repo","source":"'"$HOME"'"}' | $CLI apply-setup 2>&1)"
+[ "$(jq -c '.destinations[] | select(.name=="setup-test") | .retention' "$C")" = '{"daily":5,"weekly":3,"monthly":9,"yearly":2}' ]
+check $? "a document without retention leaves the policy alone"
+
+# A partial block is allowed, and the keys it leaves out fall through to the
+# global block and then the defaults -- the resolution keep_value already
+# does, so the panel never has to send a complete policy to change one tier.
+OUT="$(printf '%s' '{"name":"setup-test","repository":"'"$WORK"'/setup-repo","source":"'"$HOME"'","retention":{"daily":1}}' | $CLI apply-setup 2>&1)"
+[ "$($CLI status --json | jq -r '.destinations[] | select(.name=="setup-test") | .retention.daily')" = "1" ]
+check $? "a partial retention block sets what it names"
+[ "$($CLI status --json | jq -r '.destinations[] | select(.name=="setup-test") | .retention.monthly')" = "12" ]
+check $? "a partial retention block falls through to the default for the rest"
+
+# Every key must be one restic forget is actually given, and every value a
+# whole number of copies. A misspelling would otherwise sit in the config
+# looking authoritative while keep_value never read it, which is the worst
+# way for a backup policy to be wrong.
+OUT="$(printf '%s' '{"name":"x","repository":"/tmp/r","retention":{"dayly":7}}' | $CLI apply-setup 2>&1)"
+grep -q "retention keys must be" <<<"$OUT"
+check $? "apply-setup refuses an unknown retention key"
+
+OUT="$(printf '%s' '{"name":"x","repository":"/tmp/r","retention":{"daily":"7"}}' | $CLI apply-setup 2>&1)"
+grep -q "retention keys must be" <<<"$OUT"
+check $? "apply-setup refuses a retention count that is not a number"
+
+OUT="$(printf '%s' '{"name":"x","repository":"/tmp/r","retention":{"daily":-1}}' | $CLI apply-setup 2>&1)"
+grep -q "retention keys must be" <<<"$OUT"
+check $? "apply-setup refuses a negative retention count"
+
+OUT="$(printf '%s' '{"name":"x","repository":"/tmp/r","retention":{"daily":7.5}}' | $CLI apply-setup 2>&1)"
+grep -q "retention keys must be" <<<"$OUT"
+check $? "apply-setup refuses a fractional retention count"
+
+OUT="$(printf '%s' '{"name":"x","repository":"/tmp/r","retention":[7]}' | $CLI apply-setup 2>&1)"
+grep -q "retention must be an object" <<<"$OUT"
+check $? "apply-setup refuses a retention that is not an object"
+
 # A schedule left out of the document means "none": picking manual on an
 # edit must remove the old schedule, not silently keep firing it.
 OUT="$(printf '%s' '{"name":"setup-test","repository":"'"$WORK"'/setup-repo","schedule":"manual","source":"'"$HOME"'"}' | $CLI apply-setup 2>&1)"

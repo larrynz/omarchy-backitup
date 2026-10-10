@@ -2351,6 +2351,31 @@ cmd_apply_setup() {
     syssnap="$(jq -c '{system_snapshot: .system_snapshot}' <<<"$doc")"
   fi
 
+  # The retention policy, when the document carries one. It goes on the
+  # destination, which is the first place keep_value looks -- so a destination
+  # that sets its own policy is not overridden by the global block, and a
+  # destination that leaves it out keeps inheriting that block. Presence means
+  # set and absence means unchanged, for the same reason as the snapshot
+  # toggle: a hand-written document that omits the field must not reset a
+  # policy somebody tuned.
+  local retention=""
+  if jq -e 'has("retention")' <<<"$doc" >/dev/null 2>&1; then
+    jq -e '(.retention | type) == "object"' <<<"$doc" >/dev/null 2>&1 \
+      || die "retention must be an object, for example {\"daily\": 7, \"weekly\": 4}"
+    # Every key must be one restic forget is actually given, and every value a
+    # whole number of copies. A misspelling like "dayly" would otherwise sit in
+    # the config looking authoritative while keep_value never reads it, which
+    # is the worst way for a backup policy to be wrong.
+    jq -e '
+      .retention | to_entries | all(
+        ((.key | test("^(daily|weekly|monthly|yearly)$"))
+         and ((.value | type) == "number")
+         and ((.value | floor) == .value)
+         and (.value >= 0)))' <<<"$doc" >/dev/null 2>&1 \
+      || die "retention keys must be daily, weekly, monthly or yearly, each a whole number of copies"
+    retention="$(jq -c '{retention: .retention}' <<<"$doc")"
+  fi
+
   # The folders to back up: a string or an array from the setup document,
   # normalized to an array in the config. Each entry must be a non-empty
   # absolute or tilde path -- a relative path would resolve against the
@@ -2391,19 +2416,21 @@ cmd_apply_setup() {
   local obj
   obj="$(jq -cn --arg n "$name" --arg dn "$display_name" --arg r "$repository" --arg s "$schedule" \
     --argjson ss "${syssnap:-null}" \
+    --argjson ret "${retention:-null}" \
     '{name: $n, display_name: $dn, repository: $r}
      + (if $s == "" then {} else {schedule: $s} end)
-     + (if $ss == null then {} else $ss end)')"
+     + (if $ss == null then {} else $ss end)
+     + (if $ret == null then {} else $ret end)')"
   if [ "$fresh" = "1" ]; then
     CONFIG_JSON="$(jq --argjson d "$obj" '.destinations = [$d]' <<<"$CONFIG_JSON")" \
       || die "could not set the destination in the configuration"
   else
     # Merge, not replace: the document's fields overwrite the destination's,
-    # and every other field (password_file, retention, pre_command) survives.
-    # Replacing wholesale would silently drop settings the setup form does
-    # not send, and an edit that only changed the schedule would leave the
-    # destination with no password source at all. A schedule left out of the
-    # document means "none", so the old one is removed rather than kept.
+    # and every other field (password_file, pre_command) survives. Replacing
+    # wholesale would silently drop settings the setup form does not send, and
+    # an edit that only changed the schedule would leave the destination with
+    # no password source at all. A schedule left out of the document means
+    # "none", so the old one is removed rather than kept.
     CONFIG_JSON="$(jq --argjson d "$obj" \
       '(.destinations = ((.destinations // []) |
          (if any(.[]; .name == $d.name)
