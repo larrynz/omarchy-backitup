@@ -516,20 +516,73 @@ Panel {
         // hue, so the glyph is as legible mid-run as at rest. Deliberately not
         // a percentage either: a number in the bar would demand to be read,
         // where a turn only says "working" and the panel carries the detail.
-        Text {
-          id: barGlyph
+        // The spinner. The stock glyph is fa-history: a clock with a *rewind*
+        // arrow, so it is drawn counter-clockwise, and an arrow that turns
+        // against its own head reads as wrong even when you cannot say why.
+        // Mirroring it leaves a clock with a forward arrow, which then turns
+        // clockwise to match. Cheaper than hunting for a codepoint that does
+        // not exist -- Font Awesome has no clock-with-forward-arrow.
+        //
+        // Mirror and rotation sit on separate items deliberately. A Scale in an
+        // item's transform list and that same item's own rotation compose in an
+        // order that is easy to get subtly wrong, and the wrong order turns
+        // this straight back into a counter-clockwise spin. Nesting makes the
+        // order explicit: mirror the glyph, then turn the mirrored glyph.
+        Item {
+          id: glyphPivot
           anchors.centerIn: parent
-          text: BackItUpStore.iconBackItUp
-          textFormat: Text.PlainText
-          font.family: root.fontFamily
-          font.pixelSize: Style.bar.iconFont
-          renderType: Text.NativeRendering
-          color: root.barIconColor
+          width: Style.bar.iconFont
+          height: Style.bar.iconFont
+
+          // Vector, not a font glyph. Qt rasterises a Text once into a glyph
+          // cache and resamples that bitmap whenever the item is rotated, which
+          // at bar sizes is exactly what makes a spinning icon look soft and
+          // pixelated; no choice of renderType rescues it. A Shape hands the
+          // scene graph real geometry instead, so every angle is rasterised
+          // fresh and the turn stays as crisp as the rest state.
+          //
+          // The path is icon.svg's, with that file's own font-units-to-box
+          // transform and the mirror already folded in. The coordinates below
+          // are the same outline in icon.svg's 64-unit document box, so the two
+          // files still describe one shape -- and being box-sized, there is no
+          // oversized geometry left for Qt to cull against a 64px item.
+          Item {
+            id: glyphBox
+            anchors.centerIn: parent
+            width: 64
+            height: 64
+
+            // A font unit is iconFont/1024 px and one unit of the 64-unit box
+            // is 0.040173 of a font unit, so this scale lands the em on the
+            // bar's icon size -- the same optical size the font glyph had.
+            readonly property real boxScale: Style.bar.iconFont / 1024 / 0.040173
+            transform: Scale {
+              origin.x: 32
+              origin.y: 32
+              xScale: glyphBox.boxScale
+              yScale: glyphBox.boxScale
+            }
+
+            Shape {
+              id: barGlyph
+              anchors.fill: parent
+              antialiasing: true
+              preferredRendererType: Shape.CurveRenderer
+
+              ShapePath {
+                fillColor: root.barIconColor
+                strokeColor: "transparent"
+
+                PathSvg { path: "M45.117 18.903 Q42.586 16.332 39.171 14.886 Q35.756 13.44 31.98 13.44 Q24.307 13.44 18.884 18.863 Q13.46 24.287 13.46 32 Q13.46 39.633 18.884 45.096 Q24.307 50.56 31.98 50.56 Q37.765 50.56 42.586 47.185 Q43.389 46.623 43.55 45.699 Q43.711 44.775 43.188 43.971 Q42.666 43.168 41.702 43.007 Q40.738 42.846 39.934 43.409 Q36.359 45.9 31.98 45.9 Q26.276 45.9 22.178 41.802 Q18.08 37.704 18.08 32 Q18.08 26.295 22.178 22.198 Q26.276 18.1 31.98 18.1 Q37.765 18.1 41.822 22.117 L39.613 24.367 Q38.809 25.17 39.211 26.255 Q39.613 27.34 40.818 27.34 H48.813 Q49.576 27.34 50.058 26.858 Q50.54 26.376 50.54 25.652 V17.618 Q50.54 16.493 49.455 16.051 Q48.371 15.609 47.567 16.413 Z M31.98 22.76 H32.02 Q31.297 22.76 30.775 23.242 Q30.253 23.724 30.253 24.447 V31.277 L25.552 36.017 Q25.03 36.499 25.03 37.222 Q25.03 37.945 25.552 38.427 Q26.034 38.99 26.758 38.99 Q27.481 38.99 28.003 38.427 L33.225 33.205 Q33.748 32.723 33.748 32 V24.447 Q33.748 23.724 33.225 23.242 Q32.703 22.76 31.98 22.76 Z" }
+              }
+            }
+          }
 
           // RotationAnimator rather than NumberAnimation: it drives the angle
           // on the render thread, so the turn stays smooth at the bar's repaint
           // rate instead of stepping with the GUI thread. Same idiom the shell's
-          // own weather panel uses for its spinning glyph.
+          // own weather panel uses for its spinning glyph. Positive is
+          // clockwise in Qt, which is the direction the mirror now asks for.
           RotationAnimator on rotation {
             running: BackItUpStore.anyRunning
             from: 0
@@ -538,8 +591,9 @@ Panel {
             loops: Animation.Infinite
             // Come to rest upright. Without this the glyph freezes at whatever
             // angle the run happened to end on and stays there, which reads as
-            // a rendering fault rather than as idle.
-            onRunningChanged: if (!running) barGlyph.rotation = 0
+            // a rendering fault rather than as idle. Reset the pivot, so the
+            // mirrored text is not left tilted either.
+            onRunningChanged: if (!running) glyphPivot.rotation = 0
           }
         }
 
