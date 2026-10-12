@@ -1,10 +1,11 @@
 # BackIt Up
 
-BackIt Up is a backup plugin for Omarchy. It uses [restic](https://restic.net) to copy your folders to a destination you choose, on a schedule you choose, and it shows one icon in your bar. The icon is green when the latest backup succeeded and red when it did not, so you never have to open anything to know whether your backups are working.
+BackIt Up is a backup plugin for Omarchy. It uses [restic](https://restic.net) to copy your folders to a destination you choose, on a schedule you choose, and it shows one icon in your bar. The glyph stays still when the latest backup is healthy and rotates while a backup runs; when something is wrong it turns red and wears a small `!` badge, so you never have to open anything to know whether your backups are working. It is drawn in the shell's own contrast colour, so it stays legible on a transparent bar over any wallpaper.
 
 Backups are kept according to a retention schedule: by default 7 daily, 4 weekly, 12 monthly, and 3 yearly snapshots, with older ones pruned automatically. Files can be restored from a backup, and a backup can be deleted by hand from the panel, one at a time. Each backup can also take a system snapshot: a bootable rollback point that appears in the boot menu, taken at the moment the backup runs. It is optional, and needs a one-time sudoers line; see [System snapshots](#system-snapshots).
 
-![BackIt Up](screenshots/panel.png)
+![The BackIt Up panel](screenshots/panel.png)
+![A backup running](screenshots/running.png)
 
 ## Install
 
@@ -33,20 +34,29 @@ alias omarchy-backitup=~/.config/omarchy/plugins/larrynz.backitup/bin/omarchy-ba
 
 ## Setting up backups
 
-Click the icon and choose **Setup Backups**. The form has six fields:
+Click the icon and choose **Set Up Backups**. A five-step wizard asks one question per screen, and nothing is written until the last one:
 
-1. **Name.** Used for the key file, the systemd unit, and the log directory. Allowed characters are letters, digits, dashes, dots, and underscores, and it must start with a letter or digit.
-2. **Repository.** The restic repository that stores your backups, for example `/run/media/you/backup/restic`.
-3. **Source folders.** What gets backed up. The form starts with your home folder. **Add folder...** opens a file browser, which also lists hidden folders such as `.config`, because those are backed up too. The × button removes a folder from the list.
-4. **Password.** Encrypts the backups. The row under the field chooses how it is stored; see below.
-5. **Schedule.** How often backups run. Click the row to cycle through: daily, weekly, monthly, hourly, and custom. The field under it shows the exact time the preset fires, as a systemd `OnCalendar` expression, and it is editable: `*-*-* 03:00:00` can become `*-*-* 05:30:00`, or `Mon..Fri *-*-* 09,17:00:00` for weekdays at 9 and 5. Custom starts with an empty field; leaving it empty means no schedule, so backups run only when started from the panel. The expression is validated when you apply; a typo is refused with a message.
-6. **System snapshot.** Also take a bootable system snapshot with each backup. It needs a one-time sudoers line; see [System snapshots](#system-snapshots).
+1. **Destination.** The name this destination is referred to by (letters, digits, dashes, dots, and underscores; it must start with a letter or digit), and the restic repository that stores your backups, for example `/run/media/you/backup/restic`. **Browse...** opens a folder picker rooted at the mounted drives. Restic writes an encrypted repository into the folder, so it may start out empty.
+2. **Folders.** What gets backed up. Each source is a chip with its own remove button, and **Add a folder...** opens a file browser, which also lists hidden folders such as `.config`, because those are backed up too. The suggestions row offers the common folders that exist on this machine -- Documents, Pictures, Projects, Music, Videos. The form starts with your home folder, and at least one folder is required.
+3. **Password.** Encrypts the backups. By default the text is the password itself, written to a 600 file beside the configuration and never into it. The toggle switches to a command that prints the password instead (`pass show ...`, `op read ...`); see [The backup password](#the-backup-password).
+4. **Schedule.** How often backups run: **daily**, **weekly**, **monthly**, **hourly**, or **custom**, from a segmented row. A preset fills the systemd `OnCalendar` expression it stands for -- daily at 03:00, Mondays at 03:00, the 1st at 03:00, hourly -- which **Advanced** reveals for editing. Edit it freely: `*-*-* 05:30:00` is 5:30 every morning, `Mon..Fri *-*-* 09,17:00:00` is weekdays at 9 and 5. An empty custom expression means no schedule, so backups run only when started from the panel. The timer runs as your user, so it fires only while you are logged in, and a run missed while the machine was off is caught up at the next login. The **Also take a system snapshot** row sits here when the machine has `omarchy-snapshot`; see [System snapshots](#system-snapshots).
+5. **Review.** Every value read back in the words the configuration uses, the **Keep this many copies** grid, and the button that writes it all. Nothing exists yet until you press it.
 
-**Apply** does everything in one step: it writes the config, stores the password, creates the repository with `restic init` if needed, and enables the schedule. Applying an existing destination merges by name: the fields you changed are updated and every setting you did not send (retention, `pre_command`, the password source) survives, so small changes never mean retyping everything. **Cancel** closes the form, and everything you typed stays there until you apply it.
+The review grid holds restic's four retention counts -- daily, weekly, monthly, yearly, defaulting to 7, 4, 12, 3. Tuning a count stores the destination's own retention policy; leaving it at the defaults means the destination keeps following the global policy, so a later change there still reaches it.
 
-With a configuration already in place, the panel offers **Edit Configuration...**. It opens the setup form pre-filled from the first configured destination: name, repository, schedule, folders, password mode and the system snapshot toggle. The mode is detected from the config, so no toggling is needed. When the destination fetches its password with a command, that command is shown in the field, ready to edit -- it is not a secret, the config already holds it in plain text. When the destination uses a key file, the field is left empty because the password itself is never shown back, and the stored password is kept unless you type a new one.
+**Back** and **Continue** move between the screens -- the top-left control is **Back** on steps 2-5 and **Close** on step 1 -- and the last screen's button is **Set up backups**. Pressing it does everything in one command: it writes the config, stores the password, creates the repository with `restic init` if needed, and enables the schedule. Applying an existing destination merges by name: the fields you changed are updated and every setting you did not send (an untouched retention block, `pre_command`, the password source) survives, so small changes never mean retyping everything. A validation error appears on the step that caused it, and the CLI refuses loudly before anything is written.
 
-If you prefer editing the config directly, choose **Create Configuration** instead. It writes a starter file and opens it in your editor.
+With a configuration already in place, the panel offers **Edit configuration**. It reopens the same five screens pre-filled from the first configured destination, on the review step with the earlier steps marked done -- the values are already filled in, so the only thing left is to check them and save. The password mode is detected from the config, so no toggling is needed. When the destination fetches its password with a command, that command is shown in the field, ready to edit -- it is not a secret, the config already holds it in plain text. When the destination uses a key file, the field is left empty because the password itself is never shown back, and the stored password is kept unless you type a new one.
+
+If you prefer editing the config directly, run `omarchy-backitup config create` to write a starter file and open it in your editor.
+
+The five screens, in order:
+
+![Step 1: Destination](screenshots/config-destination.png)
+![Step 2: Folders](screenshots/config-folders.png)
+![Step 3: Password](screenshots/config-password.png)
+![Step 4: Schedule](screenshots/config-edit.png)
+![Step 5: Review](screenshots/config-review.png)
 
 ## Where backups go
 
@@ -108,7 +118,7 @@ omarchy-backitup key show --dest backup-drive | pass insert -m omarchy/backup
 
 Omarchy keeps its own system snapshots with snapper, and they can be selected during boot. This plugin can take one with every backup, so each restic backup is paired with a bootable "the system as it backed itself up" rollback point, taken with Omarchy's own command `omarchy-snapshot create` just before the backup starts.
 
-Turn it on in the setup form with **Also take a system snapshot**. It is off by default, and the row is offered only on machines that have `omarchy-snapshot`, which is every Omarchy install. The setting lives in the config file as `system_snapshot` on each destination, so it can also be changed by hand through **Open Configuration…**. Unlike a schedule change it needs no `omarchy-backitup install` run afterwards: the backup reads the config when it starts.
+Turn it on with **Also take a system snapshot**, on the Schedule step of the setup wizard. It is off by default, and the row is offered only on machines that have `omarchy-snapshot`, which is every Omarchy install. The setting lives in the config file as `system_snapshot` on each destination, so it can also be changed by hand there, or through **Open Configuration** when the CLI rejects a config. Unlike a schedule change it needs no `omarchy-backitup install` run afterwards: the backup reads the config when it starts.
 
 One attempt per backup, a two-minute timeout, and the outcome is reported in the panel under the destination:
 
@@ -173,21 +183,23 @@ Everything in the env file is exported to restic and to every command a backup r
 
 ## Restoring files
 
-Click the icon and choose **Restore Files**. Pick a destination and a date, then browse the snapshot like any file listing. Arrow keys move the cursor, Enter opens a folder, and typing filters the list. Switching dates keeps your current folder, which makes it easy to compare two days.
+Click the icon and choose **Restore**. Pick a destination when there is more than one, then the date from a timeline that lists every backup. The path above the listing is a breadcrumb you can click to walk back up, and switching dates keeps your current folder, which makes it easy to compare two days.
 
-You can restore a single file, or the folder you are currently viewing.
+Click a file or folder to choose it; the highlight means it will be restored, and the footer names everything picked. Double-click a folder -- or click its chevron -- to open it without choosing it. Ctrl-click adds or drops one row, Shift-click takes a range, Ctrl+A picks everything in the folder, and Space toggles the row under the cursor. Arrow keys move the cursor, Enter opens a folder, Escape clears the selection, and typing filters the list. One confirmation guards the restore.
 
-Restored files are written to `~/Restored/`, never over your current files. Move them into place yourself so nothing is replaced by accident. When a restore finishes, a notification appears, and clicking it opens your file manager with the restored file selected.
+Restored files are written into a dated folder under `~/Restored/`, never over your current files. Move them into place yourself so nothing is replaced by accident. When a restore finishes, a notification appears, and clicking it opens your file manager with the restored file selected.
+
+![Browsing a backup](screenshots/restore.png)
 
 ## Managing backups
 
-Click the icon and choose **Manage Backups**. Pick a destination and a date the same way as in Restore Files, and the picker shows what that backup holds: the folders it was taken from and how many files are in it. **Delete this backup** then asks for a confirmation that spells out the date and the destination, because there is no undo.
+Click the icon and choose **Manage**. The whole history is the view: every backup is a row with its date and how many files it holds, the newest is marked, and the destination's retention policy is read back underneath. The delete control lives on each row, quiet until you reach for it, and its confirmation spells out the date and the file count -- two deliberate interactions from an irreversible operation.
 
-Deleting runs `restic forget --prune`: the snapshot is removed and the space it used is reclaimed immediately, not at the next backup. On a large repository that can take a few minutes, and the picker says so while it works. When the delete finishes, a notification appears, and the command's own report, prune output included, lands in the destination's log file.
+Deleting runs `restic forget --prune`: the snapshot is removed and the space it used is reclaimed immediately, not at the next backup. On a large repository that can take a few minutes, and the view says so while it works. When the delete finishes, a notification appears, the list reloads onto the newest remaining backup, and the command's own report, prune output included, lands in the destination's log file. Deleting also refreshes the counts the panel shows, so the snapshot total and repository size do not go stale.
 
 The retention schedule still runs after every backup; deleting by hand is for the snapshot you want gone now. A delete only ever touches the destination it was aimed at, and a failed delete leaves everything exactly as it was.
 
-![Browsing a backup](screenshots/restore.png)
+![Managing a backup](screenshots/manage.png)
 
 ## Settings
 
@@ -195,14 +207,14 @@ Only `name` and `repository` are required. Everything else has a default:
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `source` | your home folder | What gets backed up: one path, or a list like `["~", "/etc", "/srv/data"]`. If a listed path is missing, the backup fails instead of silently skipping it. Editable in the setup form. |
+| `source` | your home folder | What gets backed up: one path, or a list like `["~", "/etc", "/srv/data"]`. If a listed path is missing, the backup fails instead of silently skipping it. Editable in the wizard. |
 | `exclude_file` | `excludes.txt` next to the config | Patterns to skip: caches, downloads, VM images, and root-owned folders the backup cannot read; see [Folders the backup cannot read](#folders-the-backup-cannot-read). |
-| `retention` | 7 daily, 4 weekly, 12 monthly, 3 yearly | Which backups are kept. Older ones are pruned. |
+| `retention` | 7 daily, 4 weekly, 12 monthly, 3 yearly | Which backups are kept. Older ones are pruned. The wizard's review step edits the four counts; a destination left at the defaults keeps following the global policy. |
 | `schedule` | none | When backups run: a preset word (`daily`, `weekly`, `monthly`, `hourly`) or a systemd `OnCalendar` expression such as `Mon..Fri *-*-* 09,17:00:00`. Without a schedule, backups run only when started from the panel. |
 | `display_name` | the `name` | The label shown in the panel. |
 | `pre_command` | none | A command that runs before every backup, to mount or wake the destination. |
 | `on_failure_command` | none | A command that runs when a backup fails. |
-| `system_snapshot` | off | Also take a system snapshot with each backup, with `omarchy-snapshot`, and store a copy of it in the backup. Needs a one-time sudoers line and two lines in snapper's config; see [System snapshots](#system-snapshots). |
+| `system_snapshot` | off | Also take a system snapshot with each backup, with `omarchy-snapshot`, and store a copy of it in the backup. The toggle is on the Schedule step of the wizard, and needs a one-time sudoers line and two lines in snapper's config; see [System snapshots](#system-snapshots). |
 
 Run `omarchy-backitup install` after changing a schedule, so the systemd units are rewritten.
 
@@ -255,6 +267,10 @@ omarchy-backitup backup --dest backup-drive --dry-run    # run without writing a
 omarchy-backitup check --dest backup-drive               # verify backup integrity
 cat ~/.local/state/omarchy-backitup/audit-*.txt          # what the last backup could not read
 ```
+
+The panel's **Log** view shows the same output without a terminal.
+
+![The run log](screenshots/log.png)
 
 To list destinations and their last run times:
 
