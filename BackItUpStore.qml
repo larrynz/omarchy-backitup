@@ -88,7 +88,7 @@ Singleton {
   readonly property var lastRun: active && active.last_run ? active.last_run : null
   readonly property string lastSuccessAt: active && active.last_success_at
                                           ? String(active.last_success_at) : ""
-  readonly property bool running: active ? active.running === true : false
+  readonly property bool running: active ? (active.running === true || isStarting(active)) : false
   readonly property var progress: active && active.progress ? active.progress : null
   readonly property bool failed: lastRun ? lastRun.result === "failed" : false
   readonly property bool everRan: lastRun !== null
@@ -103,7 +103,7 @@ Singleton {
   // Fast while a run is in progress, lazy otherwise. A backup that starts from
   // the timer at 03:00 is picked up within thirty seconds, which is soon
   // enough for something nobody is watching.
-  readonly property int pollInterval: running ? 500 : 30000
+  readonly property int pollInterval: anyRunning ? 500 : 30000
 
   function refresh() { statusProc.running = true }
 
@@ -134,6 +134,7 @@ Singleton {
     root.sources = payload.source || []
     root.systemSnapshotAvailable = payload.system_snapshot_available === true
 
+    root.reconcileStarting()
     root.loaded = true
   }
 
@@ -181,9 +182,64 @@ Singleton {
     startProc.command = ["systemctl", "--user", "start", "--no-block",
                          "omarchy-backitup@" + name + ".service"]
     startProc.running = true
+    markStarting(String(name))
+  }
+
+  // Names the user just started, before systemd reports the unit active.
+  // `systemctl start --no-block` returns at once and the unit is only
+  // `activating` for a beat after that, so "Back Up Now" would sit unchanged
+  // after being pressed and read as a dead click. These names count as running
+  // until the status confirms them, or a short grace expires so a start that
+  // fails does not lie forever.
+  property var startingNames: []
+
+  function markStarting(name) {
+    var list = startingNames.slice()
+    if (list.indexOf(String(name)) === -1) list.push(String(name))
+    startingNames = list
+    startGrace.restart()
+  }
+
+  function clearStarting(name) {
+    var list = []
+    for (var i = 0; i < startingNames.length; i++)
+      if (String(startingNames[i]) !== String(name)) list.push(startingNames[i])
+    startingNames = list
+  }
+
+  function isStarting(d) {
+    if (!d || d.name === undefined) return false
+    return startingNames.indexOf(String(d.name)) !== -1
+  }
+
+  // Hand a name over to the status once it reports the unit running; drop
+  // names the status never confirms when the grace expires.
+  function reconcileStarting() {
+    if (startingNames.length === 0) return
+    var keep = []
+    for (var i = 0; i < startingNames.length; i++) {
+      var name = startingNames[i]
+      var live = false
+      for (var j = 0; j < destinations.length; j++) {
+        if (String(destinations[j].name) === name) {
+          if (destinations[j].running === true) live = true
+          break
+        }
+      }
+      if (!live) keep.push(name)
+    }
+    if (keep.length !== startingNames.length) startingNames = keep
+  }
+
+  Timer {
+    id: startGrace
+    interval: 10000
+    repeat: false
+    onTriggered: startingNames = []
   }
 
   readonly property bool anyRunning: {
+    if (startingNames.length > 0) return true
     for (var i = 0; i < destinations.length; i++)
       if (destinations[i].running) return true
     return false
@@ -202,7 +258,7 @@ Singleton {
   // second drive is the one that broke or the one working.
   readonly property var runningDestination: {
     for (var i = 0; i < destinations.length; i++)
-      if (destinations[i].running) return destinations[i]
+      if (destinations[i].running || isStarting(destinations[i])) return destinations[i]
     return null
   }
 
@@ -271,7 +327,7 @@ Singleton {
 
   function destinationState(d) {
     clockTick
-    if (d.running) {
+    if (d.running || isStarting(d)) {
       var p = d.progress
       if (p && p.percent !== undefined && p.percent !== null)
         return Math.round(Number(p.percent) * 100) + "%"
@@ -290,7 +346,7 @@ Singleton {
   // you can see the backup is still incremental and the disk is not filling.
   function destinationDetail(d) {
     clockTick
-    if (d.running) {
+    if (d.running || isStarting(d)) {
       var p = d.progress
       var phase = p ? String(p.phase) : ""
       if (phase === "pre") return "Waking up the destination\u2026"
@@ -325,7 +381,7 @@ Singleton {
   // old the newest good copy is, which destinationDetail already says.
   function destinationMetrics(d) {
     var out = []
-    if (!d || d.running || destinationFailed(d) || !d.last_run) return out
+    if (!d || d.running || isStarting(d) || destinationFailed(d) || !d.last_run) return out
     if (d.repo_size_bytes)
       out.push({ value: humanBytes(d.repo_size_bytes), label: "stored" })
     if (d.snapshot_count)
@@ -347,7 +403,7 @@ Singleton {
   // wins. An audit or a system snapshot that went wrong is a warning, not a
   // failure -- the files are safe, one promise is not.
   function destinationStatus(d) {
-    if (d.running) return "busy"
+    if (d.running || isStarting(d)) return "busy"
     if (destinationFailed(d)) return "bad"
     if (!d.last_run) return "idle"
     if (auditHasProblems(d)) return "warn"
@@ -416,6 +472,7 @@ Singleton {
     startProc.command = ["systemctl", "--user", "start", "--no-block",
                          "omarchy-backitup@" + active.name + ".service"]
     startProc.running = true
+    markStarting(String(active.name))
     // Do not wait for the next tick: the unit takes a moment to report itself
     // as active, and an unresponsive button reads as a broken one.
     kickPoll.restart()
@@ -426,6 +483,7 @@ Singleton {
     stopProc.command = ["systemctl", "--user", "stop",
                         "omarchy-backitup@" + active.name + ".service"]
     stopProc.running = true
+    clearStarting(String(active.name))
     kickPoll.restart()
   }
 

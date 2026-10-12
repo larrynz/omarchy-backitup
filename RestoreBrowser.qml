@@ -83,6 +83,7 @@ FocusScope {
       if (event.key === Qt.Key_Escape) {
         if (restoreConfirm.opened) root.confirmCancel()
         else if (root.filter !== "") root.clearFilter()
+        else if (root.queue.length > 0) root.clearSelection()
         else root.back()
         event.accepted = true
       } else if (event.key === Qt.Key_Down) {
@@ -99,11 +100,20 @@ FocusScope {
         root.moveCursor(root.rows.length); event.accepted = true
       } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
         // Ctrl+Enter is the keyboard's way to the footer's button, because
-        // queueing several files and then reaching for the mouse is the one
+        // choosing several rows and then reaching for the mouse is the one
         // place this flow still demanded it.
         if (restoreConfirm.opened) root.confirmAccept()
         else if (event.modifiers & Qt.ControlModifier) root.restoreQueued()
         else root.activateCursor()
+        event.accepted = true
+      } else if (event.key === Qt.Key_Space) {
+        // Space is the keyboard's Ctrl-click: add or drop the row under the
+        // cursor without opening it.
+        if (root.cursorIndex >= 0 && root.cursorIndex < root.rows.length)
+          root.toggleSelection(root.rows[root.cursorIndex], root.cursorIndex)
+        event.accepted = true
+      } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
+        root.selectAllVisible()
         event.accepted = true
       } else if (event.key === Qt.Key_Backspace) {
         // Backspace edits the filter while there is one, and otherwise means
@@ -391,11 +401,7 @@ FocusScope {
   }
 
   function activateCursor() {
-    if (cursorIndex < 0 || cursorIndex >= rows.length) return
-    var row = rows[cursorIndex]
-    if (String(row.type) === "up") root.goUp()
-    else if (String(row.type) === "dir") root.enterDirectory(String(row.path))
-    else root.toggleQueue(row)
+    root.openRow(root.cursorIndex)
   }
 
   onRowsChanged: if (cursorIndex > rows.length - 1) cursorIndex = Math.max(0, rows.length - 1)
@@ -419,7 +425,24 @@ FocusScope {
     return false
   }
 
-  function toggleQueue(row) {
+  property int anchorIndex: 0
+
+  function _entry(row) {
+    return { path: String(row.path), name: String(row.name), type: String(row.type) }
+  }
+
+  // Standard file-manager selection: a plain click picks one row, Ctrl-click
+  // adds or drops a single row, Shift-click takes everything from the anchor.
+  // Folders are picked exactly like files -- the whole row is a choice, and
+  // the chevron or a double-click is what opens one -- so the list the restore
+  // button commits is built the same way everywhere.
+  function selectOnly(row, index) {
+    if (String(row.path) === "") return
+    root.queue = [root._entry(row)]
+    root.anchorIndex = index
+  }
+
+  function toggleSelection(row, index) {
     var path = String(row.path)
     if (path === "") return
     var next = []
@@ -428,7 +451,68 @@ FocusScope {
       if (String(root.queue[i].path) === path) { dropped = true; continue }
       next.push(root.queue[i])
     }
-    if (!dropped) next.push({ path: path, name: String(row.name) })
+    if (!dropped) next.push(root._entry(row))
+    root.queue = next
+    if (index !== undefined) root.anchorIndex = index
+  }
+
+  function selectRange(index) {
+    var from = Math.min(root.anchorIndex, index)
+    var to = Math.max(root.anchorIndex, index)
+    var next = []
+    for (var i = from; i <= to; i++) {
+      var row = root.rows[i]
+      if (!row || String(row.type) === "up" || String(row.path) === "") continue
+      next.push(root._entry(row))
+    }
+    root.queue = next
+  }
+
+  function selectAllVisible() {
+    var next = []
+    for (var i = 0; i < root.rows.length; i++) {
+      var row = root.rows[i]
+      if (String(row.type) === "up" || String(row.path) === "") continue
+      next.push(root._entry(row))
+    }
+    root.queue = next
+  }
+
+  function clearSelection() { root.queue = [] }
+
+  // A click on a row. ".." walks up; everything else is a choice, with the
+  // usual modifiers.
+  function activateRow(index, modifiers) {
+    if (index < 0 || index >= root.rows.length) return
+    var row = root.rows[index]
+    if (String(row.type) === "up") { root.goUp(); return }
+    if (modifiers & Qt.ShiftModifier) root.selectRange(index)
+    else if (modifiers & Qt.ControlModifier) root.toggleSelection(row, index)
+    else root.selectOnly(row, index)
+  }
+
+  // A double-click or a chevron click: folders open. Enter reaches here too.
+  function openRow(index, dropSelection) {
+    if (index < 0 || index >= root.rows.length) return
+    var row = root.rows[index]
+    if (String(row.type) === "up") { root.goUp(); return }
+    if (String(row.type) === "dir") {
+      // A double-click's first click already selected the folder; entering it
+      // drops that again, so walking down a tree does not silently add every
+      // folder you passed through to the restore list. The chevron never
+      // selected it, so it passes false.
+      if (dropSelection === true) root.dropFromSelection(String(row.path))
+      root.enterDirectory(String(row.path))
+    } else {
+      root.toggleSelection(row, index)
+    }
+  }
+
+  function dropFromSelection(path) {
+    var needle = String(path)
+    var next = []
+    for (var i = 0; i < root.queue.length; i++)
+      if (String(root.queue[i].path) !== needle) next.push(root.queue[i])
     root.queue = next
   }
 
@@ -438,15 +522,8 @@ FocusScope {
     restoreConfirm.opened = true
   }
 
-  // The folder you are standing in is restorable as a whole. It has to be a
-  // separate action rather than a row: clicking a folder walks into it, which
-  // is how you find anything.
-  function restoreCurrentFolder() {
-    var path = BackItUpStore.currentPath
-    if (path === "") return
-    root.restoreRequest = [path]
-    restoreConfirm.opened = true
-  }
+  // The folder you are standing in is restorable like anything else: select
+  // the row for it after stepping up, or Ctrl+A to pick everything visible.
 
   Connections {
     target: BackItUpStore
@@ -854,17 +931,21 @@ FocusScope {
           entryType: String(modelData.type)
           entrySize: modelData.size
           entryTime: modelData.mtime
-          queued: String(modelData.type) !== "up" && String(modelData.type) !== "dir"
-                  && root.isQueued(modelData.path)
+          queued: String(modelData.type) !== "up" && root.isQueued(modelData.path)
           hasCursor: index === root.cursorIndex
           foreground: root.foreground
           dim: root.dim
           accent: root.accent
           fontFamily: root.fontFamily
-          onActivated: {
+          onActivated: function(modifiers) {
             root.takeFocus()
             root.cursorIndex = index
-            root.activateCursor()
+            root.activateRow(index, modifiers)
+          }
+          onOpened: function(viaDoubleClick) {
+            root.takeFocus()
+            root.cursorIndex = index
+            root.openRow(index, viaDoubleClick)
           }
         }
       }
@@ -924,8 +1005,7 @@ FocusScope {
             Column {
               anchors.verticalCenter: parent.verticalCenter
               width: Math.max(Style.space(60),
-                              parent.width - folderButton.width - restoreButton.width
-                              - parent.spacing * 2)
+                              parent.width - restoreButton.width - parent.spacing)
               spacing: 0
 
               Text {
@@ -953,7 +1033,7 @@ FocusScope {
                 text: {
                   if (BackItUpStore.restoreError !== "") return BackItUpStore.restoreError
                   if (BackItUpStore.restoreTarget !== "") return "Restored into " + BackItUpStore.restoreTarget
-                  if (root.queue.length === 0) return "Tick files, or restore this folder"
+                  if (root.queue.length === 0) return "Click files or folders to choose what to restore"
                   return "into a new folder under ~/Restored/"
                 }
                 textFormat: Text.PlainText
@@ -965,23 +1045,10 @@ FocusScope {
               }
             }
 
-            // An icon rather than a labelled button. The mockup's footer carries
-            // one button, and a second label squeezed the "what will happen"
-            // sentence into an ellipsis -- the one line in this view that has to
-            // stay readable. The tooltip carries the meaning instead.
-            PanelActionButton {
-              id: folderButton
-              anchors.verticalCenter: parent.verticalCenter
-              iconText: BackItUpStore.iconFolder
-              tooltipText: "Restore this folder"
-              // Dim: it is the secondary action in this row, and at full
-              // foreground the glyph reads as loud as the primary button.
-              foreground: root.dim
-              hoverColor: root.foreground
-              enabled: BackItUpStore.currentPath !== "" && !BackItUpStore.restoreBusy
-              onClicked: root.restoreCurrentFolder()
-            }
-
+            // One button, and it commits the selection. Rows are chosen in the
+            // list -- folders included, since a click now selects rather than
+            // opens -- so there is no second, hidden way to name a target and
+            // nothing for this button to guess.
             PanelButton {
               id: restoreButton
               anchors.verticalCenter: parent.verticalCenter
@@ -991,7 +1058,7 @@ FocusScope {
               label: "Restore"
               glyph: BackItUpStore.iconRestore
               variant: "primary"
-              enabled: root.queue.length > 0 && !BackItUpStore.restoreBusy
+              enabled: !BackItUpStore.restoreBusy && root.queue.length > 0
               foreground: root.foreground
               accent: root.accent
               fontFamily: root.fontFamily

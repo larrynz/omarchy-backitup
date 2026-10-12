@@ -641,14 +641,12 @@ Panel {
     // fittedContentWidth inside the binding: that form evaluates once at open
     // and never re-runs, so the panel would keep the width of whichever view
     // happened to be showing when it opened.
-    // The wizard runs wider than the status view because it is a form, not a
-    // read-out: step 3's toggle label and step 4's five-segment picker both
-    // elide at 420, and a form that hides its own option names is worse than a
-    // wide one. Matches the browse/manage width, so it is a width this panel
-    // already wears.
-    readonly property int desiredWidth:
-      Style.space(root.browsing || root.managing || root.settingUp ? 460
-                  : 332)
+    // Every view wears the same width now. The wizard needed it first -- step
+    // 3's toggle label and step 4's five-segment picker both elided at 420 --
+    // but the status view carries the same long lines in its destination
+    // cards, and a panel that clips "backup-drive - 3.9 GB / 96.9 GB" is
+    // worse than a wide one.
+    readonly property int desiredWidth: Style.space(460)
     contentWidth: Math.min(desiredWidth,
                            panel.availableCardWidth > 0 ? panel.availableCardWidth : desiredWidth)
     contentHeight: panel.fittedContentHeight(

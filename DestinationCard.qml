@@ -14,6 +14,10 @@ Rectangle {
 
   readonly property var d: root.destination
   readonly property string state: root.d ? BackItUpStore.destinationStatus(root.d) : "idle"
+  // A run in flight has no verdict of its own yet, so the previous run's
+  // problems must not sit under it wearing the same red: the card reports the
+  // live run and nothing else until a result exists.
+  readonly property bool busy: root.state === "busy"
   readonly property color tone: StatusPalette.color(root.state)
   readonly property color dim: Qt.darker(root.foreground, 1.55)
 
@@ -28,7 +32,7 @@ Rectangle {
   readonly property var metricList: root.d ? BackItUpStore.destinationMetrics(root.d) : []
   readonly property string fallbackDetail: root.d ? BackItUpStore.destinationDetail(root.d) : ""
   readonly property string snapshotProblemText:
-    (root.d && BackItUpStore.destinationSnapshotProblem(root.d))
+    (root.d && !root.busy && BackItUpStore.destinationSnapshotProblem(root.d))
       ? BackItUpStore.destinationSnapshot(root.d) : ""
 
   // The metrics as one wrapping line, the numbers in the foreground colour and
@@ -60,7 +64,7 @@ Rectangle {
   // so they read as quiet green tags rather than as sentences.
   readonly property var tagList: {
     var out = []
-    if (!root.d) return out
+    if (!root.d || root.busy) return out
     var audit = root.d.last_audit
     if (audit && audit.unreadable !== undefined && audit.unreadable !== null) {
       var n = Number(audit.unreadable)

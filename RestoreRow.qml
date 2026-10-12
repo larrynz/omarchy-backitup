@@ -1,13 +1,13 @@
 import QtQuick
 import qs.Commons
 
-// One entry in a snapshot listing: a folder to descend into, a file to queue
-// or drop, or the ".." row that walks back up.
+// One entry in a snapshot listing: a file or folder you can choose, or the
+// ".." row that walks back up.
 //
-// Two shapes for two jobs, which is the whole redesign of this row. A chevron
-// means "this opens" and belongs to folders; a tick or a plus means "this is
-// chosen" and belongs to files. The old row used the same highlight for both,
-// so the only way to learn which a row would do was to click it.
+// Selection is standard: a plain click chooses the row, file or folder, so the
+// highlight always means "this will be restored". Opening is separate -- a
+// folder's chevron, or a double-click -- so choosing a folder no longer means
+// reaching for a tiny button somewhere else.
 //
 // Every Text here is pinned to PlainText, and that is not boilerplate: these
 // are file names out of somebody's backup. On the default AutoText, Qt decides
@@ -21,9 +21,8 @@ Item {
   property string entryType: "file"
   property var entrySize: null
   property var entryTime: null
-  // A file can be in the restore queue or not. Folders and ".." never are:
-  // clicking a folder walks into it, and the folder you are standing in is
-  // restorable from the footer.
+  // In the restore selection or not. Files and folders both take part; ".." is
+  // navigation and never does.
   property bool queued: false
   // Keyboard cursor, distinct from mouse hover and from the queue.
   property bool hasCursor: false
@@ -33,7 +32,8 @@ Item {
   property color accent: Color.accent
   property string fontFamily: Style.font.family
 
-  signal activated()
+  signal activated(int modifiers)
+  signal opened(bool viaDoubleClick)
 
   readonly property bool isDirectory: root.entryType === "dir"
   readonly property bool isUp: root.entryType === "up"
@@ -151,6 +151,22 @@ Item {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
-    onClicked: root.activated()
+    onClicked: root.activated(mouse.modifiers)
+    onDoubleClicked: root.opened(true)
+  }
+
+  // The disclosure. A folder's chevron opens it without choosing it, so the
+  // whole row can be a plain click-to-select target like a file manager's.
+  // Declared after the row MouseArea so it wins the click on its own square.
+  MouseArea {
+    anchors.verticalCenter: indicator.verticalCenter
+    anchors.right: parent.right
+    anchors.rightMargin: Style.space(7)
+    width: Style.space(20)
+    height: Style.space(20)
+    visible: root.isDirectory
+    enabled: visible
+    cursorShape: Qt.PointingHandCursor
+    onClicked: root.opened(false)
   }
 }
