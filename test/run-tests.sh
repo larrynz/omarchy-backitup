@@ -432,9 +432,9 @@ check $? "the OnFailure path runs on_failure_command"
 # The reason, not the exit code. restic reports fatal errors as JSON on stderr
 # when --json is set, so it lands in the log rather than in the stdout stream
 # and has to be dug back out of there.
-jq -e '.destinations.test.last_run.error | test("repository does not exist")' \
+jq -e '.destinations.test.last_run.error | test("not reachable")' \
   "$STATUS" >/dev/null 2>&1
-check $? "a failure records why it failed, in restic's own words"
+check $? "a failure records why it failed, in words that name the drive"
 
 jq -e '.destinations.test.last_run.error | test("^Fatal") | not' "$STATUS" >/dev/null 2>&1
 check $? "and without restic's Fatal: prefix"
@@ -1247,6 +1247,53 @@ OUT="$($CLI delete --dest test --snapshot 0123abcd 2>&1)"
 jq -e '.ok == true and .deleted == "0123abcd"' <<<"$OUT" >/dev/null 2>&1
 check $? "demo mode makes delete a no-op that reports success"
 $CLI demo off >/dev/null 2>&1
+
+# --- a destination that is not connected -----------------------------------
+#
+# An unplugged drive presents as a mount point whose stat() blocks, and
+# restic's backend retries stretch that into minutes of silence the panel
+# reads as "Loading" forever. The property pinned here: every read fails
+# fast, in words, with the drive named as the suspect.
+
+group "A destination that is not connected"
+
+# The destination has to exist in the config before key set will write its
+# key: the config lists both a repository that is not there (the unplugged
+# case) and one that is simply not created yet (the init case).
+jq --arg key "$XDG_CONFIG_HOME/omarchy-backitup/disconnected.key" \
+   --arg repo "$WORK/no-such-drive/restic" \
+   '.destinations += [{name: "disconnected", display_name: "disconnected", repository: $repo, password_file: $key}]' \
+   "$XDG_CONFIG_HOME/omarchy-backitup/config.json" > "$WORK/config.disc"
+mv "$WORK/config.disc" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+
+printf 'test-password\n' | $CLI key set --dest disconnected >/dev/null 2>&1
+check $? "key set for the disconnected destination"
+
+OUT="$(timeout 10 $CLI snapshots --dest disconnected --json 2>/dev/null)"
+jq -e '.ok == false and (.error | test("not reachable"))' <<<"$OUT" >/dev/null 2>&1
+check $? "snapshots fails with a readable reason, not a hang"
+
+OUT="$(timeout 10 $CLI ls --dest disconnected --snapshot 0123abcd --path / --json 2>/dev/null)"
+jq -e '.ok == false and (.error | test("not reachable"))' <<<"$OUT" >/dev/null 2>&1
+check $? "ls fails the same way"
+
+OUT="$(timeout 10 $CLI check --dest disconnected 2>&1)"
+grep -q 'not reachable' <<<"$OUT"
+check $? "a plain command fails with the same reason"
+
+# init creates the repository, so a directory that is simply not there yet
+# must not read as a drive that is gone.
+jq --arg key "$XDG_CONFIG_HOME/omarchy-backitup/disconnected.key" \
+   --arg repo "$WORK/fresh-drive/restic" \
+   '.destinations += [{name: "fresh", display_name: "fresh", repository: $repo, password_file: $key}]' \
+   "$XDG_CONFIG_HOME/omarchy-backitup/config.json" > "$WORK/config.fresh"
+mv "$WORK/config.fresh" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+
+timeout 60 $CLI init --dest fresh >/dev/null 2>&1
+check $? "init still creates a repository at a path that does not exist yet"
+
+timeout 10 $CLI snapshots --dest fresh --json 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1
+check $? "and the fresh repository reads back"
 
 # --- result ----------------------------------------------------------------
 

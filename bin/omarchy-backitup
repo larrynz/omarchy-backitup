@@ -55,6 +55,9 @@ SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 LOG_RETENTION_DAYS=30
 PRE_COMMAND_TIMEOUT=60
+# A stat on anything that is actually there answers in milliseconds; the
+# timeout exists for the mount point that never answers at all.
+REPO_STAT_TIMEOUT=5
 # One attempt at a system snapshot must not hold the backup hostage: snapper
 # create is near-instant on btrfs, so anything still running here is wedged,
 # not slow. Env-overridable only so the test suite can time it out in a second
@@ -550,17 +553,71 @@ restic_run() { restic ${RESTIC_ARGS+"${RESTIC_ARGS[@]}"} "$@"; }
 # pre_command lives in the user's own configuration, so a shell string is as
 # legitimate here as restic's own --password-command. With a timeout, though: a
 # NAS that refuses to wake up must not hang the run forever.
-run_pre_command() {
+# Whether the destination's repository can be reached at all, before restic
+# is asked anything. A local repository whose drive is not plugged in does
+# not fail: the mount point outlives the device, and the first stat() into
+# it blocks, so restic's backend retries stretch one missing config file
+# into minutes of silence -- which a read-only command spends stuck on
+# "Loading snapshots" forever, and a backup spends looking dead. One bounded
+# stat answers. Five seconds is generous, and covers both ways a missing
+# destination presents: a cleanly unmounted drive answers "no" at once, a
+# stale automount hangs and is cut off. Network repositories are left to
+# restic's own errors; there is no stat that answers for them.
+#
+# Reads demand the repository directory itself; init may create it, so init
+# only asks that something along the chain answers instead of hanging.
+# Returns 1 with the reason on stderr; the caller decides what a failure
+# means -- die with JSON for a read, a recorded failed run for a backup.
+repository_reachable() {
+  local strict="${1:-strict}" dir="$RESTIC_REPOSITORY" status
+  case "$dir" in /*) ;; *) return 0 ;; esac
+
+  if [ "$strict" != "strict" ]; then
+    while :; do
+      status=0
+      timeout "$REPO_STAT_TIMEOUT" test -e "$dir" || status=$?
+      [ "$status" = "0" ] && return 0
+      [ "$status" = "124" ] && break
+      [ "$dir" = "/" ] && return 0
+      dir="$(dirname -- "$dir")"
+    done
+  else
+    status=0
+    timeout "$REPO_STAT_TIMEOUT" test -e "$RESTIC_REPOSITORY" || status=$?
+    [ "$status" = "0" ] && return 0
+  fi
+  printf 'the repository at %s is not reachable -- the destination may be unplugged or not mounted\n' "$RESTIC_REPOSITORY" >&2
+  return 1
+}
+
+# Everything a command needs before it may talk to restic: the user's own
+# pre_command, to wake or mount the destination, and then the reachability
+# check -- after the wake, never before, because mounting is exactly what
+# pre_command is for. init passes "create" so a repository that is yet to
+# exist is not mistaken for a drive that is gone. Never dies: the reason
+# comes back on stderr with a non-zero exit, so a backup can record the
+# failure instead of skipping its own bookkeeping.
+prepare_destination() {
   local cmd status
   cmd="$(dest '.pre_command // empty')"
-  [ -n "$cmd" ] || return 0
+  if [ -n "$cmd" ]; then
+    log_line "pre_command: $cmd"
+    timeout "$PRE_COMMAND_TIMEOUT" bash -c "$cmd" >&2
+    status=$?
+    if [ "$status" != "0" ]; then
+      [ "$status" = "124" ] && printf 'pre_command of %s timed out (>%ss)\n' "$DEST_NAME" "$PRE_COMMAND_TIMEOUT" >&2
+      [ "$status" != "124" ] && printf 'pre_command of %s failed (exit %s)\n' "$DEST_NAME" "$status" >&2
+      return 1
+    fi
+  fi
+  repository_reachable "${1:-strict}"
+}
 
-  log_line "pre_command: $cmd"
-  timeout "$PRE_COMMAND_TIMEOUT" bash -c "$cmd" >&2
-  status=$?
-  [ "$status" = "0" ] && return 0
-  [ "$status" = "124" ] && die "pre_command of $DEST_NAME timed out (>${PRE_COMMAND_TIMEOUT}s)"
-  die "pre_command of $DEST_NAME failed (exit $status)"
+# The read commands' shape of the same thing: a failure dies, which under
+# JSON_MODE is an {ok:false} object the panel can show.
+require_destination() {
+  local msg
+  msg="$(prepare_destination "$@" 2>&1 1>/dev/null)" || die "$msg"
 }
 
 # The omarchy-snapshot command, by absolute path: the unit's PATH and sudo's
@@ -1199,7 +1256,7 @@ cmd_init() {
   config_dir_secure
   private_dir "$STATE_DIR" logs
   restic_context
-  run_pre_command
+  require_destination create
 
   printf 'Creating repository at %s...\n' "$REPO_DISPLAY" >&2
   restic_run init || return 1
@@ -1213,7 +1270,7 @@ cmd_check() {
   load_config
   select_destination "$OPT_DEST"
   restic_context
-  run_pre_command
+  require_destination
   restic_run check
 }
 
@@ -1224,7 +1281,7 @@ cmd_snapshots() {
   load_config
   select_destination "$OPT_DEST"
   restic_context
-  run_pre_command
+  require_destination
 
   local out
   # A retention policy keeps this in the tens, so --latest is a ceiling rather
@@ -1255,7 +1312,7 @@ cmd_ls() {
   load_config
   select_destination "$OPT_DEST"
   restic_context
-  run_pre_command
+  require_destination
 
   local out
   # restic writes one JSON object per line, so a line ceiling cuts cleanly --
@@ -1394,7 +1451,21 @@ cmd_backup() {
   fi
 
   progress_write running pre 1
-  run_pre_command
+  local prep_err=""
+  if ! prep_err="$(prepare_destination 2>&1 1>/dev/null)"; then
+    # An unreachable destination is a failed run like any other, so it gets
+    # the same bookkeeping a restic failure would: recorded in status.json,
+    # the reason in the log, and a non-zero exit for the unit's OnFailure.
+    # Letting prepare_destination die here would skip all of it.
+    printf '%s\n' "$prep_err" > "$ERROR_FILE"
+    log_line "Backup failed: $prep_err"
+    [ "$OPT_DRY_RUN" = "1" ] ||
+      record_status "$started" "$started_epoch" 1 failed null "$SYS_SNAP_RESULT" "$SYS_SNAP_REASON"
+    progress_write failed backup 1 "$(jq -nc --arg r failed '{percent:1.0, result:$r}')"
+    log_line ""
+    log_line "Finished: $(date)"
+    return 1
+  fi
 
   progress_write running unlock 1
   clear_stale_locks
@@ -1571,7 +1642,7 @@ audit_run() {
   # line got there first.
   (
     local snapshot snapshot_id snapshot_time src u_first
-    local src_list snap_list missing unreadable_list filtered_list audit_file="$STATE_DIR/audit-$DEST_NAME.txt"
+    local src_list snap_list missing unreadable_list filtered_list snap_excluded audit_file="$STATE_DIR/audit-$DEST_NAME.txt"
     local n_unreadable=0 n_gone=0 n_other=0
 
     src_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
@@ -1579,7 +1650,8 @@ audit_run() {
     missing="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
     unreadable_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
     filtered_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
-    trap 'rm -f -- "$src_list" "$snap_list" "$missing" "$unreadable_list" "$filtered_list"' EXIT
+    snap_excluded="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
+    trap 'rm -f -- "$src_list" "$snap_list" "$missing" "$unreadable_list" "$filtered_list" "$snap_excluded"' EXIT
 
     # What the latest snapshot holds. No snapshot yet: nothing to compare,
     # and the audit says so rather than reporting empty counts as a bill of
@@ -1658,6 +1730,12 @@ audit_run() {
           excluded_by_pattern=$((excluded_by_pattern + 1))
         elif [ -n "$SYS_SNAP_COPY" ] && [ "${upath#"$SYS_SNAP_COPY"/}" != "$upath" ]; then
           excluded_by_pattern=$((excluded_by_pattern + 1))
+          # Kept for the audit's own list: the count alone was how the
+          # exclusion showed, and a count of 184 says nothing about what was
+          # lost. Names only, into a 600 file -- these are paths, not
+          # contents, and the unreadable ones are exactly the ones the
+          # backup did not take.
+          printf '%s\n' "$upath" >> "$snap_excluded"
         else
           printf '%s\n' "$upath" >> "$filtered_list"
         fi
@@ -1685,6 +1763,12 @@ audit_run() {
         printf '  sudo setfacl -Rm u:%s:rX %s\n' "$USER" "$u_first"
         printf '  sudo setfacl -dm u:%s:rX %s   # default ACL, so future files inherit it\n' "$USER" "$u_first"
         printf 'or exclude it from the source list.\n'
+      fi
+      if [ -s "$snap_excluded" ]; then
+        printf '\nExcluded from the system snapshot copy (root-owned, unreadable as the user; up to 20 of %s shown):\n' "$(wc -l < "$snap_excluded")"
+        head -20 -- "$snap_excluded" | sed 's/^/  /'
+        printf '\nThese are the system files the backup holds no copy of. Most are\n'
+        printf 'secrets or regenerable state; see System snapshots in the README.\n'
       fi
       printf '\nExcluded paths are missing by design; a path deleted after the snapshot\n'
       printf 'was taken is not a problem. Only unreadable paths mean data the backup\n'
@@ -2130,7 +2214,12 @@ cmd_restore() {
   private_dir "$STATE_DIR" logs
   progress_init restore
   progress_write running pre 1
-  run_pre_command
+  local prep_err=""
+  if ! prep_err="$(prepare_destination 2>&1 1>/dev/null)"; then
+    progress_write failed restore 1 "$(jq -nc --arg e "$prep_err" '{percent:1.0, error:$e}')"
+    jq -nc --arg e "$prep_err" '{ok:false, error:$e}'
+    return 1
+  fi
   progress_write running restore 1
 
   restic_run restore --json "${includes[@]}" --target "$target" -- "$OPT_SNAPSHOT" 2>/dev/null |
@@ -2185,6 +2274,7 @@ cmd_delete() {
   select_destination "$OPT_DEST"
   restic_context
   open_log
+  require_destination
 
   # One snapshot, gone for good. The confirmation lives in the panel; the
   # command itself has no undo. --prune reclaims the space immediately, which

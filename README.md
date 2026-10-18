@@ -160,7 +160,7 @@ Snapper applies the group ACL to snapshots created after `SYNC_ACL` is set, so t
 
 Two things to know about the copy:
 
-- **Root-only files stay out.** Files inside the snapshot that even the group ACL leaves closed, such as `/etc/shadow`, the host's private keys, and `/root`, are excluded from the copy by name. The backup runs as you, and restic reports any path it cannot read as a failure, so without the exclusion the copy would fail the run; with it, the backup's audit counts those paths as by-design, the same as any other path you cannot reach.
+- **Root-only files stay out.** Files inside the snapshot that even the group ACL leaves closed, such as `/etc/shadow`, the host's private keys, and `/root`, are excluded from the copy by name. The backup runs as you, and restic reports any path it cannot read as a failure, so without the exclusion the copy would fail the run; with it, the backup's audit counts those paths as by-design, the same as any other path you cannot reach. The audit also lists them -- up to twenty, with the full count -- so what the copy does not hold is a fact you can read, not a number to wonder about.
 - **The copy is not bootable.** It is a plain file copy of the snapshot's contents, kept at restic's retention, not a rollback point. The honest description is "reinstall to the same state": after a disk loss, restore the copy and put `/usr` and `/etc` back into place over a fresh install. The bootable rollback points remain the snapshots themselves, which die with the disk.
 
 The copy also brings `/var/cache/pacman/pkg`, the package cache, into the backup, and that folder turns over constantly. When the setting is on, add it to the destination's exclude file to keep the backup small.
@@ -237,6 +237,8 @@ An external drive may need to be mounted first, or a NAS may be asleep. Set `pre
 ```
 
 The command runs before every backup. It should be quick, and safe to run when the destination is already available.
+
+When a local destination is simply not there -- the drive is unplugged, the mount point is stale -- every command says so within seconds instead of hanging: reads fail with `the repository at ... is not reachable`, a scheduled backup is recorded as a failed run with the same reason, and the panel shows the message rather than a spinner. This is a bounded stat, not a wait: a stale automount would otherwise hold a stat open forever, and restic's own retries would turn that into minutes of silence.
 
 ### Folders the backup cannot read
 
