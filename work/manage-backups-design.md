@@ -1,7 +1,8 @@
 # Manage backups: design
 
-Status: implemented (CLI + tests + README + panel), design report and code on
-branch work-notes.
+Status: implemented (CLI + tests + README + panel); code on the `modern`
+branch. The picker described in decisions 4 and 6 was later rebuilt as a
+history list — see "Post-implementation" at the end.
 
 ## The ask
 
@@ -110,3 +111,28 @@ exclude pattern count as by-design even when they are also unreadable, so a
 root-owned directory named in the exclude file does not sit in the panel's
 unreadable count forever. The README documents that under "Folders the
 backup cannot read".
+
+## Post-implementation: the picker became a history list
+
+Decisions 4 and 6 described a picker shaped like the old restore view: a
+destination dropdown, a snapshot dropdown, a summary of one backup, and a
+single red delete row. In use that hid the history inside the dropdown — you
+could not see what you had without picking through it, and the only visible
+action was the destructive one. The view was rebuilt:
+
+- **The history is the view.** Every backup is a row with its date and how
+  many files it holds, and the newest is marked. There is no snapshot
+  dropdown to open first, and no separate "what this backup holds" panel.
+- **The delete lives on each row**, quiet until it is reached for. The
+  confirmation still spells out the date and the file count, and the
+  dialog's Delete button is still the only path to the command.
+- **The destination's retention policy is read back underneath** the list,
+  resolved the way the CLI resolves it: the destination's own counts, then
+  the global block, then the built-in defaults. The promise the delete sits
+  inside is shown rather than implied.
+- **A delete refreshes the counts.** The panel's snapshot total and the
+  repository size are recomputed after a delete returns, so neither waits for
+  the next backup to correct itself.
+
+Decision 7 still holds: a delete moves neither staleness key, so the delete
+completion reloads the list and lands on the newest remaining backup.

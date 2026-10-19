@@ -1,7 +1,9 @@
 # System snapshots: pair a bootable rollback point with each backup
 
-Status: implemented (CLI + tests + README + panel), design report and code on
-branch work-notes; test suite 163 passed, 0 failed.
+Status: implemented and verified on the box (CLI + tests + README + panel);
+code on the `modern` branch. The suite's System snapshot group is green, and
+the whole path was exercised on a real Omarchy machine — see "Verified on the
+box" below.
 
 ## The feature
 
@@ -69,9 +71,11 @@ The design that makes the copy possible, all covered by the suite:
 
 - **The two snapper lines** (`ALLOW_GROUPS="wheel"`, `SYNC_ACL="yes"` in
   `/etc/snapper/configs/root`) let the backup read the newest snapshot as
-  the user. Snapper applies the ACL to snapshots created after SYNC_ACL is
-  set, so the next backup picks it up with no further steps.
-  `work/snapper-acl-wizard.sh` sets the lines up and verifies the result.
+  the user. Snapper puts the group ACL on `/.snapshots` itself, and the
+  snapshot trees beneath it are already world-readable, so the parent ACL is
+  what the user-level read needs; the next backup picks it up with no further
+  steps. `work/snapper-acl-wizard.sh` sets the lines up and verifies the
+  result.
 - **The path comes from the directory, not the command**: the snapshot
   command prints nothing, so `system_snapshot_path` reads the newest entry
   under the snapshots dir (SNAPSHOT_DIR inside SUBVOLUME from the config,
@@ -100,6 +104,28 @@ The design that makes the copy possible, all covered by the suite:
 The real-box check is the wizard: it sets up the lines, creates a snapshot
 passwordless through the sudoers line, and verifies the tree is readable
 and that root-only files stay closed.
+
+## Verified on the box (October 2026)
+
+The setup was exercised end to end on a real Omarchy machine (snapper 0.13.1,
+btrfs root), not only through the fake-command test path:
+
+- The sudoers rule `youruser ALL=(root) NOPASSWD: /usr/bin/omarchy-snapshot
+  create` is present and is the only passwordless grant for the command —
+  `sudo -n -l` lists it with no `restore` and no wildcard.
+- `/etc/snapper/configs/root` carries `ALLOW_GROUPS="wheel"` and
+  `SYNC_ACL="yes"`, and the user is in `wheel`.
+- With that config, `/.snapshots` carries `group:wheel:r-x`, `snapper -c root
+  list` runs as the user, and the newest snapshot under it is readable — the
+  exact lookup `system_snapshot_path` / `system_snapshot_readable` performs.
+- Running the plugin's own command,
+  `timeout "$SYSTEM_SNAPSHOT_TIMEOUT" sudo -n -- /usr/bin/omarchy-snapshot
+  create`, created a fresh snapshot with exit 0, and the read logic resolved
+  and read that new snapshot non-empty as the user. This is the case a real
+  backup hits: a snapshot created *after* `SYNC_ACL` went on.
+
+The one thing a static check cannot prove is a freshly created snapshot being
+readable immediately; the run above is that check.
 
 ## Verdicts
 
