@@ -1062,7 +1062,9 @@ destinations_table() {
     last="$(jq -r --arg n "$name" '
       .destinations[$n].last_run // {} |
       if .finished_at then
-        (.finished_at | sub("T"; " ") | .[0:16]) + (if .result == "failed" then "  FAILED" else "" end)
+        (.finished_at | sub("T"; " ") | .[0:16]) + (if .result == "failed" then "  FAILED"
+                                                    elif .result == "unreachable" then "  OFFLINE"
+                                                    else "" end)
       else "never" end' <<<"$status" 2>/dev/null)"
     [ -n "$last" ] || last="never"
 
@@ -1453,15 +1455,19 @@ cmd_backup() {
   progress_write running pre 1
   local prep_err=""
   if ! prep_err="$(prepare_destination 2>&1 1>/dev/null)"; then
-    # An unreachable destination is a failed run like any other, so it gets
-    # the same bookkeeping a restic failure would: recorded in status.json,
-    # the reason in the log, and a non-zero exit for the unit's OnFailure.
-    # Letting prepare_destination die here would skip all of it.
+    # An unreachable destination is not a failed backup: nothing ran, and the
+    # last good copy is exactly as good as it was. It is recorded as its own
+    # result so the panel can stay calm about it -- the notification still
+    # fires (the exit code is still non-zero, so OnFailure does its work),
+    # but red is reserved for runs that actually failed. Letting
+    # prepare_destination die here would skip the bookkeeping entirely, and
+    # a die would also leave the previous result standing with no word about
+    # why the schedule went quiet.
     printf '%s\n' "$prep_err" > "$ERROR_FILE"
-    log_line "Backup failed: $prep_err"
+    log_line "Backup did not run: $prep_err"
     [ "$OPT_DRY_RUN" = "1" ] ||
-      record_status "$started" "$started_epoch" 1 failed null "$SYS_SNAP_RESULT" "$SYS_SNAP_REASON"
-    progress_write failed backup 1 "$(jq -nc --arg r failed '{percent:1.0, result:$r}')"
+      record_status "$started" "$started_epoch" 1 unreachable null "$SYS_SNAP_RESULT" "$SYS_SNAP_REASON"
+    progress_write failed backup 1 "$(jq -nc --arg r unreachable '{percent:1.0, result:$r}')"
     log_line ""
     log_line "Finished: $(date)"
     return 1
@@ -1982,7 +1988,7 @@ record_status() {
   status="$(load_status)"
 
   local reason=""
-  if [ "$result" = "failed" ]; then
+  if [ "$result" != "ok" ]; then
     if readable_file "$ERROR_FILE" && [ -s "$ERROR_FILE" ]; then
       reason="$(head -1 -- "$ERROR_FILE")"
     else
@@ -1991,12 +1997,14 @@ record_status() {
   fi
 
   # Snapshot count and repository size only after a successful run: the
-  # connection is open anyway at that point. After a failure the old values
-  # stay, because they were true when written and an empty field would read as
-  # "0 snapshots".
+  # connection is open anyway at that point. After a failure or an
+  # unreachable destination the old values stay, because they were true when
+  # written and an empty field would read as "0 snapshots" -- and probing
+  # the counts through a mount point with no device behind it is exactly the
+  # wait this run was saved from.
   snapshot_count=null
   repo_size=null
-  if [ "$result" != "failed" ]; then
+  if [ "$result" = "ok" ]; then
     snapshot_count="$(repo_snapshot_count)"
     repo_size="$(repo_repo_size)"
   fi
@@ -2039,7 +2047,7 @@ record_status() {
                             end)
         }
       })
-    | if $result != "failed" then .destinations[$name].last_success_at = $finished else . end
+    | if $result == "ok" then .destinations[$name].last_success_at = $finished else . end
     | if $count != null then .destinations[$name].snapshot_count = $count else . end
     | if $size != null then .destinations[$name].repo_size_bytes = $size else . end
     ' <<<"$status" | write_private "$STATUS_FILE" ||

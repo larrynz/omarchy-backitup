@@ -1,6 +1,6 @@
 # BackIt Up
 
-BackIt Up is a backup plugin for Omarchy. It uses [restic](https://restic.net) to copy your folders to a destination you choose, on a schedule you choose, and it shows one icon in your bar. The glyph stays still when the latest backup is healthy and rotates while a backup runs; when something is wrong it turns red and wears a small `!` badge, so you never have to open anything to know whether your backups are working. It is drawn in the shell's own contrast colour, so it stays legible on a transparent bar over any wallpaper.
+BackIt Up is a backup plugin for Omarchy. It uses [restic](https://restic.net) to copy your folders to a destination you choose, on a schedule you choose, and it shows one icon in your bar. The glyph stays still when the latest backup is healthy and rotates while a backup runs; when the latest backup failed it turns red and wears a small `!` badge, so you never have to open anything to know whether your backups are working. A destination that is merely not connected -- an unplugged drive -- does not turn it red; see [Destinations that are not always available](#destinations-that-are-not-always-available). It is drawn in the shell's own contrast colour, so it stays legible on a transparent bar over any wallpaper.
 
 Backups are kept according to a retention schedule: by default 7 daily, 4 weekly, 12 monthly, and 3 yearly snapshots, with older ones pruned automatically. Files can be restored from a backup, and a backup can be deleted by hand from the panel, one at a time. Each backup can also take a system snapshot: a bootable rollback point that appears in the boot menu, taken at the moment the backup runs. It is optional, and needs a one-time sudoers line; see [System snapshots](#system-snapshots).
 
@@ -16,7 +16,7 @@ omarchy plugin enable larrynz.backitup
 omarchy bar move larrynz.backitup --section right
 ```
 
-restic is the only dependency.
+restic is the only dependency to install: the CLI also needs jq, but Omarchy ships that already.
 
 ### The command line
 
@@ -216,9 +216,7 @@ Only `name` and `repository` are required. Everything else has a default:
 | `on_failure_command` | none | A command that runs when a backup fails. |
 | `system_snapshot` | off | Also take a system snapshot with each backup, with `omarchy-snapshot`, and store a copy of it in the backup. The toggle is on the Schedule step of the wizard, and needs a one-time sudoers line and two lines in snapper's config; see [System snapshots](#system-snapshots). |
 
-Run `omarchy-backitup install` after changing a schedule, so the systemd units are rewritten.
-
-Also run it once after updating from a version older than 1.1.0. Timers written before 1.1.0 carried a `Requires=` dependency on the backup service: stopping a running backup also stopped its timer, so no further backups were scheduled. Running `install` rewrites and re-enables the units.
+A manual edit of the config file changing the schedule requires `omarchy-backitup install` so the systemd units are rewritten. This is not required when using the edit configuration within the application.
 
 Times use a 24-hour clock. For AM/PM, set `timeFormat` on the widget in `shell.json`:
 
@@ -238,7 +236,7 @@ An external drive may need to be mounted first, or a NAS may be asleep. Set `pre
 
 The command runs before every backup. It should be quick, and safe to run when the destination is already available.
 
-When a local destination is simply not there -- the drive is unplugged, the mount point is stale -- every command says so within seconds instead of hanging: reads fail with `the repository at ... is not reachable`, a scheduled backup is recorded as a failed run with the same reason, and the panel shows the message rather than a spinner. This is a bounded stat, not a wait: a stale automount would otherwise hold a stat open forever, and restic's own retries would turn that into minutes of silence.
+When a local destination is simply not there -- the drive is unplugged, the mount point is stale -- every command says so within seconds instead of hanging: reads fail with `the repository at ... is not reachable`, and a scheduled backup is recorded as `unreachable` with the same reason. That is a different fact from a failed backup: nothing ran, so the panel stays calm -- the destination reads "Not connected" with the date of your last good copy, and the bar does not go red. Red is spent on runs that actually failed. The notification still fires, so a schedule that went quiet is never silent. This is a bounded stat, not a wait: a stale automount would otherwise hold a stat open forever, and restic's own retries would turn that into minutes of silence.
 
 ### Folders the backup cannot read
 

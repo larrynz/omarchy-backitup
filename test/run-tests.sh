@@ -415,7 +415,12 @@ cp "$WORK/config.bak" "$CONFIG"
 
 group_restic "Failure handling"
 
-jq --arg r "$WORK/does-not-exist" \
+# A failure has to be a failure of the backup itself, not of the
+# destination's whereabouts: the directory is there, the repository inside
+# it is not. Red is spent on runs that actually ran and failed.
+mkdir -p "$WORK/corrupt-repo"
+printf 'not a restic repository\n' > "$WORK/corrupt-repo/config"
+jq --arg r "$WORK/corrupt-repo" \
    --arg c "printf hooked > $WORK/hook.txt" \
    '.destinations[0].repository = $r | .on_failure_command = $c' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
 rm -f "$WORK/hook.txt"
@@ -432,15 +437,31 @@ check $? "the OnFailure path runs on_failure_command"
 # The reason, not the exit code. restic reports fatal errors as JSON on stderr
 # when --json is set, so it lands in the log rather than in the stdout stream
 # and has to be dug back out of there.
-jq -e '.destinations.test.last_run.error | test("not reachable")' \
+jq -e '.destinations.test.last_run.error | test("no key found")' \
   "$STATUS" >/dev/null 2>&1
-check $? "a failure records why it failed, in words that name the drive"
+check $? "a failure records why it failed, in restic's own words"
 
 jq -e '.destinations.test.last_run.error | test("^Fatal") | not' "$STATUS" >/dev/null 2>&1
 check $? "and without restic's Fatal: prefix"
 
+jq -e '.destinations.test.last_success_at != null' "$STATUS" >/dev/null 2>&1
+check $? "and a failed run keeps the previous last_success_at"
+
 $CLI status --json | jq -e '.ok == true' >/dev/null 2>&1
 check $? "status still emits valid JSON after a failure"
+
+# An unreachable destination is a different fact from a failed backup: the
+# drive is not there, nothing ran, and the last good copy is as good as it
+# ever was. Its own result, so the panel can stay calm about it.
+jq --arg r "$WORK/does-not-exist" \
+   '.destinations[0].repository = $r' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+$CLI backup --dest test >/dev/null 2>&1
+jq -e '.destinations.test.last_run.result == "unreachable"' "$STATUS" >/dev/null 2>&1
+check $? "an unreachable destination is recorded as unreachable, not failed"
+
+jq -e '.destinations.test.last_run.error | test("not reachable")' \
+  "$STATUS" >/dev/null 2>&1
+check $? "an unreachable run records why, in words that name the drive"
 
 cp "$WORK/config.bak" "$CONFIG"
 
@@ -594,13 +615,13 @@ cp "$WORK/config.bak" "$CONFIG"
 [ "$($CLI status --json | jq -r '.destinations[0].display_name')" = "test" ]
 check $? "without display_name it falls back to the name"
 
-# A failure must not erase the record of the last good backup: how stale your
-# files now are is the thing you actually need after one.
+# An unreachable destination must not erase the record of the last good
+# backup either: nothing ran, so nothing about the old copy changed.
 jq --arg r "$WORK/gone" '.destinations[0].repository = $r' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
 $CLI backup --dest test >/dev/null 2>&1
-jq -e '.destinations.test.last_success_at != null and .destinations.test.last_run.result == "failed"' \
+jq -e '.destinations.test.last_success_at != null and .destinations.test.last_run.result == "unreachable"' \
   "$STATUS" >/dev/null 2>&1
-check $? "a failed run keeps the previous last_success_at"
+check $? "an unreachable run keeps the previous last_success_at"
 cp "$WORK/config.bak" "$CONFIG"
 
 # --- saving the key to 1Password -------------------------------------------

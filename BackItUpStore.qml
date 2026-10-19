@@ -334,6 +334,7 @@ Singleton {
       return "Working\u2026"
     }
     if (!d.last_run) return "Never"
+    if (d.last_run.result === "unreachable") return "Not connected"
     if (d.last_run.result === "failed")
       return "Failed " + menuDate(d.last_run.finished_at)
                .replace(/^Today/, "today").replace(/^Yesterday/, "yesterday")
@@ -358,6 +359,12 @@ Singleton {
       return phrase + "\u2026 " + humanBytes(p.bytes_done) + " of " + humanBytes(p.total_bytes)
     }
 
+    if (d.last_run && d.last_run.result === "unreachable") {
+      if (d.last_success_at)
+        return "Not connected \u00b7 Last good backup: " + menuDate(d.last_success_at)
+      return "Not connected \u00b7 no successful backup yet"
+    }
+
     if (destinationFailed(d)) {
       if (d.last_success_at)
         return "Last good backup: " + menuDate(d.last_success_at)
@@ -378,10 +385,14 @@ Singleton {
   // rather than one string so a view can set the numbers in a brighter
   // weight than the words around them -- the numbers are what you scan for.
   // Empty after a failure or a run in flight: there the useful line is how
-  // old the newest good copy is, which destinationDetail already says.
+  // old the newest good copy is, which destinationDetail already says. Same
+  // for a destination that could not be reached: the numbers are from the
+  // last time the drive was in, and painting them under "Not connected"
+  // would read as a health report it is not.
   function destinationMetrics(d) {
     var out = []
     if (!d || d.running || isStarting(d) || destinationFailed(d) || !d.last_run) return out
+    if (d.last_run.result === "unreachable") return out
     if (d.repo_size_bytes)
       out.push({ value: humanBytes(d.repo_size_bytes), label: "stored" })
     if (d.snapshot_count)
@@ -401,9 +412,13 @@ Singleton {
   // can never disagree about whether a destination is fine. A run that is
   // happening now outranks a stale failure from before it: the newest word
   // wins. An audit or a system snapshot that went wrong is a warning, not a
-  // failure -- the files are safe, one promise is not.
+  // failure -- the files are safe, one promise is not. And a destination the
+  // backup could not reach is not a failure at all: nothing ran, the last
+  // good copy is as good as it ever was, and red is spent only on runs that
+  // actually failed. It reads as idle, with the reason on the card.
   function destinationStatus(d) {
     if (d.running || isStarting(d)) return "busy"
+    if (d.last_run && d.last_run.result === "unreachable") return "idle"
     if (destinationFailed(d)) return "bad"
     if (!d.last_run) return "idle"
     if (auditHasProblems(d)) return "warn"
