@@ -317,4 +317,4 @@ MIT.
 
 `icon.svg` embeds the `fa-history` outline from [Font Awesome Free](https://fontawesome.com), licensed CC BY 4.0.
 
-The wallpaper behind the screenshots is a pattern built from [Heroicons](https://heroicons.com), licensed MIT, Copyright (c) Tailwind Labs, Inc.
+The wallpaper behind the screenshots is the background of Omarchy's own Akane theme.
