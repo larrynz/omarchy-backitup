@@ -83,7 +83,12 @@ LOCKS_BYTE_CAP=$((1 * 1024 * 1024))
 PROGRESS_INTERVAL_MS=500
 STALE_PROGRESS_SECONDS=10
 
-SELF="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+# Split so each assignment stays plain: a cd+pwd substitution with an embedded
+# && is one of the shell idioms the marketplace's security scanner cannot
+# model, and this path feeds the ExecStart= line of every installed unit.
+selfdir="$(dirname -- "${BASH_SOURCE[0]}")"
+selfdir="$(cd -- "$selfdir" && pwd)"
+SELF="$selfdir/$(basename -- "${BASH_SOURCE[0]}")"
 PLUGIN_DIR="$(dirname -- "$(dirname -- "$SELF")")"
 
 # Shipped with the plugin rather than named from the icon theme: the generic
@@ -170,7 +175,7 @@ private_dir() {
   local keep=("$@") owner entry base skip k
 
   mkdir -p -m 700 -- "$dir" 2>/dev/null
-  { [ -d "$dir" ] && [ ! -L "$dir" ]; } || die "$dir is a symlink or not a directory"
+  if [ ! -d "$dir" ] || [ -L "$dir" ]; then die "$dir is a symlink or not a directory"; fi
   owner="$(stat -c '%u' -- "$dir" 2>/dev/null)" || die "cannot stat $dir"
   [ "$owner" = "$(id -u)" ] || die "$dir is owned by someone else"
   chmod 700 -- "$dir" 2>/dev/null || die "cannot chmod $dir"
@@ -198,7 +203,7 @@ private_dir() {
 config_dir_secure() {
   local entry owner
   mkdir -p -m 700 -- "$CONFIG_DIR" 2>/dev/null
-  { [ -d "$CONFIG_DIR" ] && [ ! -L "$CONFIG_DIR" ]; } || die "$CONFIG_DIR is a symlink or not a directory"
+  if [ ! -d "$CONFIG_DIR" ] || [ -L "$CONFIG_DIR" ]; then die "$CONFIG_DIR is a symlink or not a directory"; fi
   owner="$(stat -c '%u' -- "$CONFIG_DIR" 2>/dev/null)" || die "cannot stat $CONFIG_DIR"
   [ "$owner" = "$(id -u)" ] || die "$CONFIG_DIR is owned by someone else"
   chmod 700 -- "$CONFIG_DIR" 2>/dev/null
@@ -349,8 +354,9 @@ config_problem() {
 }
 
 load_config() {
-  user_file "$CONFIG_FILE" ||
+  if ! user_file "$CONFIG_FILE"; then
     die "no configuration at $CONFIG_FILE, create one (see the README) or use the button in the panel"
+  fi
 
   CONFIG_JSON="$(cat -- "$CONFIG_FILE")"
 
@@ -367,7 +373,7 @@ select_destination() {
   # No "active" destination any more: with several of them they all run on
   # their own schedule and they all matter, so singling one out was a fiction
   # the panel had to keep explaining. Without --dest, act on the first.
-  [ -n "$wanted" ] || wanted="$(cfg '.destinations[0].name')"
+  wanted="${wanted:-$(cfg '.destinations[0].name')}"
 
   DEST_JSON="$(jq -c --arg n "$wanted" '.destinations[] | select(.name == $n)' <<<"$CONFIG_JSON")"
   [ -n "$DEST_JSON" ] ||
@@ -384,7 +390,7 @@ dest() { jq -r "$1" <<<"$DEST_JSON"; }
 dest_label() {
   local label
   label="$(dest '.display_name // empty')"
-  [ -n "$label" ] || label="$DEST_NAME"
+  label="${label:-$DEST_NAME}"
   printf '%s' "$label"
 }
 
@@ -392,7 +398,7 @@ dest_label() {
 keep_value() {
   local key="$1" fallback="$2" value
   value="$(jq -r --arg k "$key" '.retention[$k] // empty' <<<"$DEST_JSON" 2>/dev/null)"
-  [ -n "$value" ] || value="$(jq -r --arg k "$key" '.retention[$k] // empty' <<<"$CONFIG_JSON" 2>/dev/null)"
+  value="${value:-$(jq -r --arg k "$key" '.retention[$k] // empty' <<<"$CONFIG_JSON" 2>/dev/null)}"
   number_or "$value" "$fallback"
 }
 
@@ -407,7 +413,7 @@ declare -A SECRETS=()
 load_secrets() {
   local path key value line lineno=0
   path="$(expand_tilde "$(dest '.secrets_file // empty')")"
-  [ -n "$path" ] || path="$CONFIG_DIR/$DEST_NAME.env"
+  path="${path:-$CONFIG_DIR/$DEST_NAME.env}"
   SECRETS=()
   user_file "$path" || return 0
 
@@ -419,7 +425,7 @@ load_secrets() {
     case "$line" in "export "*) line="${line#export }" ;; esac
 
     key="${line%%=*}"
-    [ "$key" = "$line" ] && die "$path:$lineno is not a KEY=VALUE line"
+    if [ "$key" = "$line" ]; then die "$path:$lineno is not a KEY=VALUE line"; fi
     value="${line#*=}"
     key="$(trim "$key")"
     value="$(trim "$value")"
@@ -456,8 +462,9 @@ substitute_vars() {
     var="${BASH_REMATCH[1]}"
     if [ -z "${SECRETS[$var]+isset}" ]; then
       SUBST_MISSING="$var"
-      [ "$strict" = "1" ] &&
+      if [ "$strict" = "1" ]; then
         die "the repository of $DEST_NAME refers to \${$var}, but that is not set in $CONFIG_DIR/$DEST_NAME.env"
+      fi
       input="${input//\$\{$var\}/}"
       continue
     fi
@@ -525,7 +532,7 @@ restic_context() {
     return 0
   fi
 
-  [ -n "$password_file" ] || password_file="$CONFIG_DIR/$DEST_NAME.key"
+  password_file="${password_file:-$CONFIG_DIR/$DEST_NAME.key}"
   user_file "$password_file" ||
     die "no key file at $password_file, run: omarchy-backitup key set --dest $DEST_NAME, or set password_command in the config if the destination fetches its own password"
   chmod 600 -- "$password_file" 2>/dev/null
@@ -574,17 +581,23 @@ repository_reachable() {
 
   if [ "$strict" != "strict" ]; then
     while :; do
-      status=0
-      timeout "$REPO_STAT_TIMEOUT" test -e "$dir" || status=$?
-      [ "$status" = "0" ] && return 0
-      [ "$status" = "124" ] && break
-      [ "$dir" = "/" ] && return 0
+      if timeout "$REPO_STAT_TIMEOUT" test -e "$dir"; then
+        status=0
+      else
+        status=$?
+      fi
+      if [ "$status" = "0" ]; then return 0; fi
+      if [ "$status" = "124" ]; then break; fi
+      if [ "$dir" = "/" ]; then return 0; fi
       dir="$(dirname -- "$dir")"
     done
   else
-    status=0
-    timeout "$REPO_STAT_TIMEOUT" test -e "$RESTIC_REPOSITORY" || status=$?
-    [ "$status" = "0" ] && return 0
+    if timeout "$REPO_STAT_TIMEOUT" test -e "$RESTIC_REPOSITORY"; then
+      status=0
+    else
+      status=$?
+    fi
+    if [ "$status" = "0" ]; then return 0; fi
   fi
   printf 'the repository at %s is not reachable -- the destination may be unplugged or not mounted\n' "$RESTIC_REPOSITORY" >&2
   return 1
@@ -658,7 +671,7 @@ system_snapshot_path() {
     snapdir="${snapdir:-.snapshots}"
     dir="${subv%/}/${snapdir#/}"
   fi
-  [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || return 1
+  if [ ! -d "$dir" ] || [ ! -r "$dir" ] || [ ! -x "$dir" ]; then return 1; fi
   newest="$(ls -1t -- "$dir" 2>/dev/null | head -n 1)"
   [ -n "$newest" ] || return 1
   printf '%s' "$dir/$newest/snapshot"
@@ -692,11 +705,11 @@ run_system_snapshot() {
   SYS_SNAP_REASON=""
 
   local cmd out rc
-  cmd="$(system_snapshot_cmd)" || {
+  if ! cmd="$(system_snapshot_cmd)"; then
     SYS_SNAP_RESULT=unavailable
     SYS_SNAP_REASON="omarchy-snapshot is not installed"
     return 0
-  }
+  fi
 
   out="$(timeout "$SYSTEM_SNAPSHOT_TIMEOUT" sudo -n -- "$cmd" create 2>&1)"
   rc=$?
@@ -734,7 +747,7 @@ run_system_snapshot() {
   SYS_SNAP_RESULT=failed
   SYS_SNAP_REASON="$(grep -m1 -v '^[[:space:]]*$' <<<"$out")"
   SYS_SNAP_REASON="$(trim "${SYS_SNAP_REASON:-}")"
-  [ -n "$SYS_SNAP_REASON" ] || SYS_SNAP_REASON="omarchy-snapshot exited with code $rc"
+  SYS_SNAP_REASON="${SYS_SNAP_REASON:-omarchy-snapshot exited with code $rc}"
   return 0
 }
 
@@ -781,7 +794,7 @@ progress_init() {
 # progress_write <state> <phase> <force> [extra-json]
 progress_write() {
   local state="$1" phase="$2" force="$3" extra="${4:-}" now elapsed epoch
-  [ -n "$extra" ] || extra='{}'
+  if [ -z "$extra" ]; then extra='{}'; fi
   now="$(now_ms)"
   if [ "$force" != "1" ] && [ $((now - PROGRESS_LAST)) -lt "$PROGRESS_INTERVAL_MS" ]; then
     return 0
@@ -932,11 +945,12 @@ key_save_to_1password() {
     die "1Password did not respond. Sign in, or enable the CLI in the desktop app under Developer."
   fi
 
-  user_file "$keyfile" ||
+  if ! user_file "$keyfile"; then
     die "no key file at $keyfile, run: omarchy-backitup key set --dest $DEST_NAME"
+  fi
 
-  title="BackIt Up backup key ($DEST_NAME)"
-  [ -n "$OPT_VAULT" ] && vault_args=(--vault "$OPT_VAULT")
+  title="${title:-BackIt Up backup key ($DEST_NAME)}"
+  if [ -n "$OPT_VAULT" ]; then vault_args=(--vault "$OPT_VAULT"); fi
 
   # Refuse rather than overwrite or duplicate. Two items with the same name is
   # how you end up restoring with the wrong key a year from now.
@@ -987,7 +1001,7 @@ cmd_key() {
   config_dir_secure
 
   path="$(expand_tilde "$(dest '.password_file // empty')")"
-  [ -n "$path" ] || path="$CONFIG_DIR/$DEST_NAME.key"
+  path="${path:-$CONFIG_DIR/$DEST_NAME.key}"
 
   case "$action" in
     save-1password)
@@ -1045,7 +1059,7 @@ destinations_table() {
   status="$(load_status)"
 
   units="no"
-  readable_file "$SYSTEMD_DIR/omarchy-backitup@.service" && units="yes"
+  if readable_file "$SYSTEMD_DIR/omarchy-backitup@.service"; then units="yes"; fi
 
   printf '%-14s %-22s %-38s %-14s %s\n' NAME LABEL WHERE SCHEDULE "LAST BACKUP"
   printf '%-14s %-22s %-38s %-14s %s\n' -------------- ---------------------- \
@@ -1057,7 +1071,7 @@ destinations_table() {
     label="$(dest_label)"
     repo="$(sanitize_repository "$(dest '.repository // empty')")"
     schedule="$(dest '.schedule // empty')"
-    [ -n "$schedule" ] || schedule="on request"
+    schedule="${schedule:-on request}"
 
     last="$(jq -r --arg n "$name" '
       .destinations[$n].last_run // {} |
@@ -1066,12 +1080,12 @@ destinations_table() {
                                                     elif .result == "unreachable" then "  OFFLINE"
                                                     else "" end)
       else "never" end' <<<"$status" 2>/dev/null)"
-    [ -n "$last" ] || last="never"
+    last="${last:-never}"
 
     # Truncate rather than wrap: a table that reflows is harder to scan than
     # one that loses the middle of a long URL you already know.
-    [ "${#repo}" -gt 38 ] && repo="${repo:0:35}..."
-    [ "${#label}" -gt 22 ] && label="${label:0:19}..."
+    if [ "${#repo}" -gt 38 ]; then repo="${repo:0:35}..."; fi
+    if [ "${#label}" -gt 22 ]; then label="${label:0:19}..."; fi
 
     printf '%-14s %-22s %-38s %-14s %s\n' "$name" "$label" "$repo" "$schedule" "$last"
   done < <(cfg '.destinations[].name')
@@ -1153,10 +1167,10 @@ cmd_status() {
   # as a broken plugin rather than a missing step. Report it so the panel can
   # say what to do instead of offering a control that cannot work.
   installed=false
-  readable_file "$SYSTEMD_DIR/omarchy-backitup@.service" && installed=true
+  if readable_file "$SYSTEMD_DIR/omarchy-backitup@.service"; then installed=true; fi
 
   while IFS= read -r name; do
-    [ -n "$name" ] || continue
+    if [ -z "$name" ]; then continue; fi
     progress="$(read_json_or "$STATE_DIR/progress-$name.json" 'null')"
     running=false
 
@@ -1167,7 +1181,7 @@ cmd_status() {
       updated="$(jq -r '.updated_epoch // empty' <<<"$progress" 2>/dev/null)"
       updated="$(number_or "$updated" 0)"
       age=$((epoch - updated))
-      [ "$updated" -gt 0 ] && [ "$age" -lt "$STALE_PROGRESS_SECONDS" ] && running=true
+      if [ "$updated" -gt 0 ] && [ "$age" -lt "$STALE_PROGRESS_SECONDS" ]; then running=true; fi
     fi
 
     if systemctl --user --quiet is-active "omarchy-backitup@$name.service" 2>/dev/null; then
@@ -1239,12 +1253,12 @@ cmd_status() {
   # form from this list, so a re-setup shows what is really configured.
   local src
   src="$(cfg 'if (.source | type) == "array" then .source else [(.source // empty)] end')"
-  [ -n "$src" ] || src='[]'
+  src="${src:-[]}"
   # Whether this machine could take a system snapshot at all: the form offers
   # the toggle only where omarchy-snapshot exists, so on a plain Arch box the
   # plugin never shows a control that cannot work.
   local snap_available=false
-  system_snapshot_cmd >/dev/null 2>&1 && snap_available=true
+  if system_snapshot_cmd >/dev/null 2>&1; then snap_available=true; fi
   jq -nc --argjson d "$out" --argjson installed "$installed" --argjson src "$src" \
     --argjson snapavail "$snap_available" \
     '{ok:true, configured:true, invalid:false, units_installed:$installed, source:$src,
@@ -1306,7 +1320,7 @@ cmd_ls() {
   JSON_MODE=1
   parse_options "$@"
   local path="$OPT_PATH"
-  [ -n "$path" ] || path="/"
+  path="${path:-/}"
   demo_on && { demo_ls_json "$path"; return 0; }
   validate_snapshot_id "$OPT_SNAPSHOT"
   validate_absolute_path "$path"
@@ -1372,7 +1386,9 @@ cmd_backup() {
   # Global, not local: the EXIT trap runs after this function's scope is gone,
   # where a local would be unset -- and under `set -u` that is a hard error on
   # every single run.
-  SUMMARY_FILE="$(mktemp -- "$STATE_DIR/.summary.XXXXXX")" || die "could not create a temporary file"
+  if ! SUMMARY_FILE="$(mktemp -- "$STATE_DIR/.summary.XXXXXX")"; then
+    die "could not create a temporary file"
+  fi
   ERROR_FILE="$SUMMARY_FILE.reason"
   UNREADABLE_FILE="$SUMMARY_FILE.unreadable"
   chmod 600 -- "$SUMMARY_FILE"
@@ -1389,7 +1405,7 @@ cmd_backup() {
     [ -n "$entry" ] || continue
     sources+=("$(expand_tilde "$entry")")
   done < <(cfg 'if (.source | type) == "array" then .source[] else (.source // empty) end' 2>/dev/null)
-  [ "${#sources[@]}" -gt 0 ] || sources=("$HOME")
+  if [ "${#sources[@]}" -eq 0 ]; then sources=("$HOME"); fi
 
   local missing=()
   for entry in "${sources[@]}"; do
@@ -1436,7 +1452,9 @@ cmd_backup() {
       # here and excluded from the copy by name: the backup runs as you,
       # and a holed snapshot counts as a failure.
       if [ "$SYS_SNAP_RESULT" = "created" ]; then
-        SYS_SNAP_COPY="$(system_snapshot_path 2>/dev/null)" || SYS_SNAP_COPY=""
+        if ! SYS_SNAP_COPY="$(system_snapshot_path 2>/dev/null)"; then
+          SYS_SNAP_COPY=""
+        fi
         if [ -z "$SYS_SNAP_COPY" ] || ! system_snapshot_readable "$SYS_SNAP_COPY"; then
           SYS_SNAP_COPY=""
           SYS_SNAP_REASON="the snapshot was taken, but its copy into the backup could not read it; snapper's group ACL (ALLOW_GROUPS plus SYNC_ACL in /etc/snapper/configs/root) is required; see System snapshots in the README"
@@ -1546,7 +1564,7 @@ cmd_backup() {
       # the cheaper half of the trade: unpruned data is still your data, and
       # the next clean run clears the backlog.
       reason="$(unreadable_reason)"
-      [ -n "$reason" ] || reason="some files could not be read"
+      reason="${reason:-some files could not be read}"
       log_line "Backup finished with gaps: $reason"
       log_line "A snapshot was still written and covers everything readable -- fix the cause and the next run goes green."
       # Beats restic's own "at least one source file could not be read", which
@@ -1607,7 +1625,7 @@ cmd_backup() {
 # survive a newer one that found unreadable files.
 record_audit() {
   local at="$1" unreadable="$2" tmp
-  [ -f "$STATUS_FILE" ] || return 0
+  if [ ! -f "$STATUS_FILE" ]; then return 0; fi
   # The same .summary. prefix the scratch sweep looks for, so a jq failure that
   # abandons the temp file cannot accumulate across nightly runs.
   tmp="$(mktemp -- "$STATE_DIR/.summary.XXXXXX")" || return 0
@@ -1651,12 +1669,12 @@ audit_run() {
     local src_list snap_list missing unreadable_list filtered_list snap_excluded audit_file="$STATE_DIR/audit-$DEST_NAME.txt"
     local n_unreadable=0 n_gone=0 n_other=0
 
-    src_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
-    snap_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
-    missing="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
-    unreadable_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
-    filtered_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
-    snap_excluded="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")" || exit 1
+    if ! src_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
+    if ! snap_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
+    if ! missing="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
+    if ! unreadable_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
+    if ! filtered_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
+    if ! snap_excluded="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
     trap 'rm -f -- "$src_list" "$snap_list" "$missing" "$unreadable_list" "$filtered_list" "$snap_excluded"' EXIT
 
     # What the latest snapshot holds. No snapshot yet: nothing to compare,
@@ -1686,7 +1704,7 @@ audit_run() {
       # never checks, so nothing about it shows up here.
       [ -n "$SYS_SNAP_COPY" ] && printf '%s\n' "$SYS_SNAP_COPY"
     } | while IFS= read -r src; do
-      [ -n "$src" ] || continue
+      if [ -z "$src" ]; then continue; fi
       src="$(expand_tilde "$src")"
       [ -e "$src" ] || continue
       find "$src" \( -type f -o -type d \) -readable -printf '%y %p\n' 2>/dev/null >> "$src_list"
@@ -1708,7 +1726,7 @@ audit_run() {
     # was listed -- an unreadable one never entered that list -- so the
     # unreadable total is the separate find, plus any race the diff caught.
     while IFS= read -r line; do
-      [ -n "$line" ] || continue
+      if [ -z "$line" ]; then continue; fi
       src="${line:2}"
       if [ ! -e "$src" ]; then
         n_gone=$((n_gone + 1))
@@ -1814,7 +1832,7 @@ stream_backup() {
           total_bytes: (.total_bytes // 0),
           current_file: ((.current_files // []) | first)
         }' <<<"$line" 2>/dev/null)"
-        [ -n "$extra" ] || extra='{}'
+        if [ -z "$extra" ]; then extra='{}'; fi
         progress_write running backup 0 "$extra"
         ;;
       summary)
@@ -1841,7 +1859,7 @@ stream_backup() {
         # itself it would land in the log as raw JSON, and the panel would have
         # nothing to say beyond an exit code.
         message="$(jq -r '.message // ""' <<<"$line" 2>/dev/null)"
-        [ -n "$message" ] || message="restic exited with an error"
+        message="${message:-restic exited with an error}"
         log_line "$message"
         # Only the first line: the rest is restic suggesting where to look,
         # which is useful in a log and too long for a notification.
@@ -1877,9 +1895,9 @@ path_excluded() {
 
 unreadable_reason() {
   local count first
-  readable_file "$UNREADABLE_FILE" || return 0
+  if ! readable_file "$UNREADABLE_FILE"; then return 0; fi
   count="$(number_or "$(grep -c '' -- "$UNREADABLE_FILE" 2>/dev/null)" 0)"
-  [ "$count" -gt 0 ] || return 0
+  if [ "$count" -le 0 ]; then return 0; fi
   first="$(head -1 -- "$UNREADABLE_FILE" 2>/dev/null)"
   if [ "$count" = "1" ]; then
     printf 'could not read %s' "$first"
@@ -1920,7 +1938,7 @@ strip_error_prefix() {
 # the last non-empty line only when neither is there.
 last_error_line() {
   local logfile="$1" line=""
-  readable_file "$logfile" || return 0
+  if ! readable_file "$logfile"; then return 0; fi
 
   # Logs written before stderr was folded into the pipe carry the raw JSON
   # line rather than the message stream_backup now writes. Kept so that
@@ -1933,8 +1951,8 @@ last_error_line() {
   # Otherwise: restic's plain-text errors start with "Fatal:", this script's own
   # start with "Error:". Everything else in the log is progress noise, so only
   # fall back to the last line when neither is there.
-  [ -n "$line" ] || line="$(grep -E '^(Fatal|Error|error):' -- "$logfile" 2>/dev/null | tail -1)"
-  [ -n "$line" ] || line="$(grep -v '^[[:space:]]*$' -- "$logfile" 2>/dev/null | tail -1)"
+  line="${line:-$(grep -E '^(Fatal|Error|error):' -- "$logfile" 2>/dev/null | tail -1)}"
+  line="${line:-$(grep -v '^[[:space:]]*$' -- "$logfile" 2>/dev/null | tail -1)}"
 
   line="$(strip_error_prefix "$line")"
 
@@ -1962,10 +1980,10 @@ repo_repo_size() {
 # figures until the next nightly backup.
 refresh_repo_stats() {
   local count size status
-  [ -f "$STATUS_FILE" ] || return 0
+  if [ ! -f "$STATUS_FILE" ]; then return 0; fi
   count="$(repo_snapshot_count)"
   size="$(repo_repo_size)"
-  [ "$count" != "null" ] || return 0
+  if [ "$count" = "null" ]; then return 0; fi
   status="$(load_status)"
   jq --arg name "$DEST_NAME" --argjson count "$count" --argjson size "$size" '
     .destinations[$name] = ((.destinations[$name] // {}) + {snapshot_count: $count})
@@ -2070,8 +2088,8 @@ record_status() {
 run_failure_command() {
   local exit_code="$1" logfile="$2" cmd
   cmd="$(dest '.on_failure_command // empty')"
-  [ -n "$cmd" ] || cmd="$(cfg '.on_failure_command // empty')"
-  [ -n "$cmd" ] || return 0
+  cmd="${cmd:-$(cfg '.on_failure_command // empty')}"
+  if [ -z "$cmd" ]; then return 0; fi
 
   DESTINATION="$DEST_NAME" EXIT_CODE="$exit_code" LOG_FILE="$logfile" \
     setsid bash -c "$cmd" >/dev/null 2>&1 &
@@ -2086,19 +2104,19 @@ cmd_report_failure() {
   parse_options "$@"
   local name="$OPT_DEST"
   local status run exit_code logfile detail label
-  [ -n "$name" ] || name="backup"
+  name="${name:-backup}"
 
   status="$(load_status)"
   run="$(jq -c --arg n "$name" '.destinations[$n].last_run // {}' <<<"$status" 2>/dev/null)"
-  [ -n "$run" ] || run='{}'
+  if [ -z "$run" ]; then run='{}'; fi
   exit_code="$(jq -r '.exit_code // 1' <<<"$run" 2>/dev/null)"
   logfile="$(jq -r '.log_file // ""' <<<"$run" 2>/dev/null)"
 
   # What went wrong, not where the log lives. A path is something you act on
   # after you know the reason, and it does not fit on a notification anyway.
   detail="$(jq -r '.error // ""' <<<"$run" 2>/dev/null)"
-  [ -n "$detail" ] || detail="$(last_error_line "$logfile")"
-  [ -n "$detail" ] || detail="Click to open the log."
+  detail="${detail:-$(last_error_line "$logfile")}"
+  detail="${detail:-Click to open the log.}"
 
   # The readable label needs the config, which may itself be why the run
   # failed. Fall back to the identifier rather than saying nothing.
@@ -2204,7 +2222,7 @@ cmd_restore() {
   # snapshot, so everything lands in a dated directory the user then moves.
   local target restore_exit
   target="$(expand_tilde "$OPT_TARGET")"
-  [ -n "$target" ] || target="$HOME/Restored/$(date +%Y-%m-%d-%H%M)"
+  target="${target:-$HOME/Restored/$(date +%Y-%m-%d-%H%M)}"
   # restic overwrites what is already in the target, so a stray --target /
   # typed by hand would lay old files over the running system. The widget
   # never passes --target; these two are the values a typo can produce, and
@@ -2212,7 +2230,7 @@ cmd_restore() {
   if [ "$target" = "/" ] || [ "$target" = "$HOME" ]; then
     die "refusing to restore into $target; pick a directory that holds nothing else"
   fi
-  mkdir -p -- "$target" || die "could not create $target"
+  if ! mkdir -p -- "$target"; then die "could not create $target"; fi
 
   # restic takes --include once per path, so a queue of ticked files is still
   # a single restore: one repository unlock, one progress stream, one target.
@@ -2242,7 +2260,7 @@ cmd_restore() {
     # where the restored item actually landed. With several paths there is no
     # single item to open, and the target root is the honest answer.
     local landed="$target"
-    [ "${#paths[@]}" -eq 1 ] && landed="$target${paths[0]}"
+    if [ "${#paths[@]}" -eq 1 ]; then landed="$target${paths[0]}"; fi
     notify_restore_done "$target" "$landed"
     jq -nc --arg t "$target" --arg s "$landed" '{ok:true, target:$t, restored:$s}'
   else
@@ -2254,7 +2272,7 @@ cmd_restore() {
 stream_restore() {
   local line extra
   while IFS= read -r line; do
-    [ "$(jq -r 'if type == "object" then (.message_type // "") else "" end' <<<"$line" 2>/dev/null)" = "status" ] || continue
+    if [ "$(jq -r 'if type == "object" then (.message_type // "") else "" end' <<<"$line" 2>/dev/null)" != "status" ]; then continue; fi
     extra="$(jq -c '{
       percent: (.percent_done // 0),
       files_done: (.files_restored // .files_done // 0),
@@ -2262,7 +2280,7 @@ stream_restore() {
       bytes_done: (.bytes_restored // .bytes_done // 0),
       total_bytes: (.total_bytes // 0)
     }' <<<"$line" 2>/dev/null)"
-    [ -n "$extra" ] || extra='{}'
+    if [ -z "$extra" ]; then extra='{}'; fi
     progress_write running restore 0 "$extra"
   done
   return 0
@@ -2396,7 +2414,7 @@ cmd_apply_setup() {
 
   local doc
   if [ -n "$OPT_FILE" ]; then
-    user_file "$OPT_FILE" || die "could not read $OPT_FILE"
+    if ! user_file "$OPT_FILE"; then die "could not read $OPT_FILE"; fi
     doc="$(cat -- "$OPT_FILE")"
   else
     doc="$(cat)"
@@ -2412,8 +2430,9 @@ cmd_apply_setup() {
   case "$name" in
     *[$'\n\r']*) die "name contains a newline" ;;
   esac
-  jq -en --arg n "$name" '$n | test("^[A-Za-z0-9][A-Za-z0-9._-]*$")' >/dev/null 2>&1 \
-    || die "name must start with a letter or digit, and contain only letters, digits, dashes, dots and underscores"
+  if ! jq -en --arg n "$name" '$n | test("^[A-Za-z0-9][A-Za-z0-9._-]*$")' >/dev/null 2>&1; then
+    die "name must start with a letter or digit, and contain only letters, digits, dashes, dots and underscores"
+  fi
 
   repository="$(jq -r '.repository // ""' <<<"$doc")"
   [ -n "$repository" ] || die "the setup document has no repository"
@@ -2424,7 +2443,7 @@ cmd_apply_setup() {
 
   display_name="$(jq -r '.display_name // ""' <<<"$doc")"
   display_name="$(printf '%s' "$display_name" | tr -d '\r\n')"
-  [ -n "$display_name" ] || display_name="$name"
+  display_name="${display_name:-$name}"
 
   schedule="$(jq -r '.schedule // ""' <<<"$doc")"
   if [ -n "$schedule" ] && [ "$schedule" != "manual" ]; then
@@ -2444,8 +2463,9 @@ cmd_apply_setup() {
   # off.
   local syssnap=""
   if jq -e 'has("system_snapshot")' <<<"$doc" >/dev/null 2>&1; then
-    jq -e '(.system_snapshot | type) == "boolean"' <<<"$doc" >/dev/null 2>&1 \
-      || die "system_snapshot must be true or false"
+    if ! jq -e '(.system_snapshot | type) == "boolean"' <<<"$doc" >/dev/null 2>&1; then
+      die "system_snapshot must be true or false"
+    fi
     syssnap="$(jq -c '{system_snapshot: .system_snapshot}' <<<"$doc")"
   fi
 
@@ -2464,13 +2484,14 @@ cmd_apply_setup() {
     # whole number of copies. A misspelling like "dayly" would otherwise sit in
     # the config looking authoritative while keep_value never reads it, which
     # is the worst way for a backup policy to be wrong.
-    jq -e '
+    if ! jq -e '
       .retention | to_entries | all(
         ((.key | test("^(daily|weekly|monthly|yearly)$"))
          and ((.value | type) == "number")
          and ((.value | floor) == .value)
-         and (.value >= 0)))' <<<"$doc" >/dev/null 2>&1 \
-      || die "retention keys must be daily, weekly, monthly or yearly, each a whole number of copies"
+         and (.value >= 0)))' <<<"$doc" >/dev/null 2>&1; then
+      die "retention keys must be daily, weekly, monthly or yearly, each a whole number of copies"
+    fi
     retention="$(jq -c '{retention: .retention}' <<<"$doc")"
   fi
 
@@ -2506,7 +2527,7 @@ cmd_apply_setup() {
   local fresh=0
   if ! user_file "$CONFIG_FILE"; then
     config_dir_secure
-    starter_config | write_private "$CONFIG_FILE" || die "could not write $CONFIG_FILE"
+    if ! starter_config | write_private "$CONFIG_FILE"; then die "could not write $CONFIG_FILE"; fi
     fresh=1
   fi
   load_config
@@ -2573,9 +2594,11 @@ cmd_apply_setup() {
     keypath="$CONFIG_DIR/$DEST_NAME.key"
     printf '%s\n' "$(trim "$password")" | write_private "$keypath" || die "could not write $keypath"
     cp -- "$CONFIG_FILE" "$CONFIG_FILE.bak" 2>/dev/null || true
-    jq --arg n "$DEST_NAME" --arg p "$keypath" \
+    if ! jq --arg n "$DEST_NAME" --arg p "$keypath" \
       '(.destinations[] | select(.name == $n) | .password_file) = $p' <<<"$CONFIG_JSON" \
-      | write_private "$CONFIG_FILE" || die "could not record password_file in $CONFIG_FILE"
+      | write_private "$CONFIG_FILE"; then
+      die "could not record password_file in $CONFIG_FILE"
+    fi
     CONFIG_JSON="$(jq --arg n "$DEST_NAME" --arg p "$keypath" \
       '(.destinations[] | select(.name == $n) | .password_file) = $p' <<<"$CONFIG_JSON")"
     printf 'Key written to %s (mode 600).\n' "$keypath"
@@ -2588,9 +2611,11 @@ cmd_apply_setup() {
     # map, not an assignment on a filtered path: jq's `=` emits the updated
     # subdocument per match, and the config file would end up holding the
     # destination object instead of the configuration around it.
-    jq --arg n "$DEST_NAME" --arg c "$password_command" \
+    if ! jq --arg n "$DEST_NAME" --arg c "$password_command" \
       '.destinations = ((.destinations // []) | map(if .name == $n then . + {password_command: $c} | del(.password_file) else . end))' <<<"$CONFIG_JSON" \
-      | write_private "$CONFIG_FILE" || die "could not record password_command in $CONFIG_FILE"
+      | write_private "$CONFIG_FILE"; then
+      die "could not record password_command in $CONFIG_FILE"
+    fi
     CONFIG_JSON="$(jq --arg n "$DEST_NAME" --arg c "$password_command" \
       '.destinations = ((.destinations // []) | map(if .name == $n then . + {password_command: $c} | del(.password_file) else . end))' <<<"$CONFIG_JSON")"
     # dest() reads the DEST_JSON snapshot taken before the password blocks:
@@ -2757,7 +2782,7 @@ write_unit() {
   local path="$SYSTEMD_DIR/$filename"
   local existing=""
   local marker
-  readable_file "$path" && existing="$(cat -- "$path")"
+  if readable_file "$path"; then existing="$(cat -- "$path")"; fi
   if [ "$existing" = "$content" ]; then
     printf '  = %s (unchanged)\n' "$filename"
     return 0
@@ -2778,9 +2803,9 @@ cmd_install() {
   # the directories might be somebody else's problem to fix.
   unreadable=""
   while IFS= read -r src; do
-    [ -n "$src" ] || continue
+    if [ -z "$src" ]; then continue; fi
     src="$(expand_tilde "$src")"
-    [ -d "$src" ] || continue
+    if [ ! -d "$src" ]; then continue; fi
     found="$(find "$src" -type d \! -readable 2>/dev/null | head -5)"
     if [ -n "$found" ]; then
       unreadable="$unreadable$found
@@ -2799,7 +2824,7 @@ cmd_install() {
   # before anything is written, so a refusal leaves nothing half-installed.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    [ -n "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .schedule // ""' <<<"$CONFIG_JSON")" ] || continue
+    if [ -z "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .schedule // ""' <<<"$CONFIG_JSON")" ]; then continue; fi
     pc="$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .pre_command // ""' <<<"$CONFIG_JSON")"
     unit_name="$(printf '%s' "$pc" | sed -n 's/^systemctl --user \(start\|restart\) \([^[:space:]]*\).*/\2/p')"
     if [ -n "$unit_name" ] && ! systemctl --user cat "$unit_name" >/dev/null 2>&1; then
@@ -2815,9 +2840,9 @@ cmd_install() {
 
   local names=() name schedule delay unit path filename keep
   while IFS= read -r name; do
-    [ -n "$name" ] || continue
+    if [ -z "$name" ]; then continue; fi
     schedule="$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .schedule // ""' <<<"$CONFIG_JSON")"
-    [ -n "$schedule" ] || continue
+    if [ -z "$schedule" ]; then continue; fi
     delay="$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .randomized_delay // "15m"' <<<"$CONFIG_JSON")"
     check_unit_values "$name" "$schedule" "$delay"
     names+=("$name")
@@ -2832,7 +2857,7 @@ cmd_install() {
     filename="$(basename -- "$path")"
     keep=0
     for name in ${names+"${names[@]}"}; do
-      [ "$filename" = "omarchy-backitup@$name.timer" ] && keep=1
+      if [ "$filename" = "omarchy-backitup@$name.timer" ]; then keep=1; fi
     done
     [ "$keep" = "1" ] && continue
     systemctl --user disable --now "$filename" >/dev/null 2>&1
@@ -2896,7 +2921,7 @@ demo_on() { readable_file "$DEMO_FILE"; }
 # ones they will meet on a bad day.
 demo_scene() {
   local scene=""
-  readable_file "$DEMO_FILE" && scene="$(head -1 -- "$DEMO_FILE" 2>/dev/null)"
+  if readable_file "$DEMO_FILE"; then scene="$(head -1 -- "$DEMO_FILE" 2>/dev/null)"; fi
   case "$scene" in
     running|failed) printf '%s' "$scene" ;;
     *) printf '%s' "idle" ;;
