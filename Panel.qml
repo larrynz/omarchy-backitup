@@ -405,12 +405,13 @@ Panel {
               ? BackItUpStore.sources.slice() : [Quickshell.env("HOME") || "/"]
     root.setupSources = src
     // Editing reuses the same five screens instead of keeping a second form
-    // in step with this one, and opens on the review with every earlier step
-    // already walked: the values are all filled in, so the only thing left to
-    // do is check them before saving. The stepper marks 1-4 done because they
-    // are -- there is nothing to ask.
+    // in step with this one, and opens at the start: the values are all
+    // filled in already, so walking the screens is the check, and the check
+    // starts where the form starts. Nothing is marked done -- the stepper
+    // derives that from the current step -- and the review screen waits at
+    // the end, where the save button lives.
     root.setupRetention = root.retentionBlock(d)
-    root.setupStep = root.setupStepLabels.length
+    root.setupStep = 1
     root.setupValidationError = ""
   }
 
