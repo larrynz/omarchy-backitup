@@ -118,7 +118,11 @@ UNREADABLE_FILE=""
 # result into a global rather than printing it.
 die() {
   if [ "$JSON_MODE" = "1" ]; then
-    jq -nc --arg e "$*" '{ok:false, error:$e}'
+    # The message travels in the environment: a failure reason can quote
+    # configuration text (a pre_command's line, its output, a path), and an
+    # --arg value would put all of it on jq's command line, which every local
+    # account can read. environ is owner-only.
+    MESSAGE="$*" jq -nc '{ok:false, error:$ENV.MESSAGE}'
     exit 0
   fi
   printf 'Error: %s\n' "$*" >&2
@@ -621,7 +625,11 @@ prepare_destination() {
   local cmd status
   cmd="$(dest '.pre_command // empty')"
   if [ -n "$cmd" ]; then
-    log_line "pre_command: $cmd"
+    # The command text stays out of the log and stderr alike: under --json the
+    # log line reaches stderr, require_destination captures it for die, and the
+    # log feeds the failure notification's detail line. The configuration file
+    # is the one place the text lives.
+    log_line "pre_command: running the configured command"
     PRE_COMMAND="$cmd" timeout "$PRE_COMMAND_TIMEOUT" bash -c 'eval "$PRE_COMMAND"' >&2
     status=$?
     if [ "$status" != "0" ]; then
@@ -1158,8 +1166,8 @@ cmd_status() {
   # already there while saying nothing about what was wrong with it.
   local problem
   if ! problem="$(config_problem "$(cat -- "$CONFIG_FILE")")"; then
-    jq -nc --arg e "$problem" \
-      '{ok:true, configured:false, invalid:true, error:$e, destinations:[]}'
+    MESSAGE="$problem" jq -nc \
+      '{ok:true, configured:false, invalid:true, error:$ENV.MESSAGE, destinations:[]}'
     return 0
   fi
   load_config
@@ -1233,25 +1241,28 @@ cmd_status() {
          monthly: ($d.monthly // $g.monthly // 12),
          yearly:  ($d.yearly  // $g.yearly  // 3)}' <<<"$CONFIG_JSON")"
 
-    out="$(PWC="$pwc" jq -c \
+    # stored is the destination's previous status record: its last_run.error
+    # quotes whatever restic or a pre_command printed on the previous run, so
+    # like every message-shaped value it travels in the environment, never on
+    # jq's command line.
+    out="$(PWC="$pwc" BACKITUP_STORED="$(jq -c --arg n "$name" '.destinations[$n] // {}' <<<"$status")" jq -c \
       --arg name "$name" \
       --arg label "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .display_name // $n' <<<"$CONFIG_JSON")" \
       --arg repo "$repo" \
-      --argjson stored "$(jq -c --arg n "$name" '.destinations[$n] // {}' <<<"$status")" \
       --arg schedule "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .schedule // ""' <<<"$CONFIG_JSON")" \
       --argjson running "$running" \
       --argjson progress "$progress" \
       --arg pwmode "$pwmode" \
       --argjson ssnap "$ssnap" \
       --argjson ret "$ret" \
-      '. + [$stored + {name:$name, display_name:$label,
+      '. + [($ENV.BACKITUP_STORED | fromjson) + {name:$name, display_name:$label,
                        schedule:(if $schedule == "" then null else $schedule end),
                        running:$running,
                        password_mode:$pwmode,
                        system_snapshot_enabled:$ssnap,
                        retention:$ret,
                        password_command:(if ($ENV.PWC // "") == "" then null else $ENV.PWC end),
-                       repository_display:(if $repo == "" then ($stored.repository_display // "") else $repo end),
+                       repository_display:(if $repo == "" then (($ENV.BACKITUP_STORED | fromjson).repository_display // "") else $repo end),
                        progress:(if $running then $progress else null end)}]' <<<"$out")"
   done < <(cfg '.destinations[].name')
 
@@ -2039,19 +2050,19 @@ record_status() {
     repo_size="$(repo_repo_size)"
   fi
 
-  jq \
+  # reason and snapwhy quote failure text (a pre_command's output, a snapshot
+  # tool's message); they travel in the environment, not on jq's command line.
+  BACKITUP_REASON="$reason" BACKITUP_SNAPWHY="$snap_reason" jq \
     --arg name "$DEST_NAME" \
     --arg display "$REPO_DISPLAY" \
     --arg started "$started" \
     --arg finished "$finished" \
     --arg result "$result" \
     --arg logfile "$LOG_FILE" \
-    --arg reason "$reason" \
     --argjson duration "$duration" \
     --argjson exit_code "$(number_or "$exit_code" 1)" \
     --argjson summary "$summary" \
     --arg snapr "$snap_result" \
-    --arg snapwhy "$snap_reason" \
     --argjson count "$snapshot_count" \
     --argjson size "$repo_size" \
     '
@@ -2069,11 +2080,11 @@ record_status() {
           files_changed: ($summary.files_changed // null),
           data_added_bytes: ($summary.data_added // null),
           total_files: ($summary.total_files_processed // null),
-          error: (if $reason == "" then null else $reason end),
+          error: (if $ENV.BACKITUP_REASON == "" then null else $ENV.BACKITUP_REASON end),
           log_file: $logfile,
           system_snapshot: (if $snapr == "" then null
                             else {result: $snapr,
-                                  reason: (if $snapwhy == "" then null else $snapwhy end)}
+                                  reason: (if $ENV.BACKITUP_SNAPWHY == "" then null else $ENV.BACKITUP_SNAPWHY end)}
                             end)
         }
       })
@@ -2256,8 +2267,9 @@ cmd_restore() {
   progress_write running pre 1
   local prep_err=""
   if ! prep_err="$(prepare_destination 2>&1 1>/dev/null)"; then
-    progress_write failed restore 1 "$(jq -nc --arg e "$prep_err" '{percent:1.0, error:$e}')"
-    jq -nc --arg e "$prep_err" '{ok:false, error:$e}'
+    progress_write failed restore 1 \
+      "$(MESSAGE="$prep_err" jq -nc '{percent:1.0, error:$ENV.MESSAGE}')"
+    MESSAGE="$prep_err" jq -nc '{ok:false, error:$ENV.MESSAGE}'
     return 1
   fi
   progress_write running restore 1

@@ -489,6 +489,52 @@ check $? "a failure records why it failed, in restic's own words"
 jq -e '.destinations.test.last_run.error | test("^Fatal") | not' "$STATUS" >/dev/null 2>&1
 check $? "and without restic's Fatal: prefix"
 
+# The failure path, not just the run path. Under --json a failed pre_command's
+# reason travels from prepare_destination through die into an {ok:false}
+# object -- and the reason used to quote the command itself, because the log
+# line named it and log lines reach stderr under --json. Now the command text
+# appears nowhere the plugin writes, and the message travels through the
+# environment. Two tokens keep the claim honest: one the command prints
+# itself (its own diagnostic, welcome anywhere), one that exists only inside
+# the command text and must appear in no argv and no log.
+# A jq stub records what it was handed and still produces the real document,
+# so the test can check both ends of every jq call in the run.
+mkdir -p "$WORK/stub-jq"
+cat > "$WORK/stub-jq/jq" <<STUB
+#!/usr/bin/bash
+printf '%s\0' "\$@" >> "\$JQ_ARGV"
+exec $(command -v jq) "\$@"
+STUB
+chmod +x "$WORK/stub-jq/jq"
+jq ".destinations[0].pre_command = \"printf stream-token >&2; exit 3 # config-only-token\"" "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+
+rm -f "$WORK/fail.json" "$WORK/jq-argv-fail"
+JQ_ARGV="$WORK/jq-argv-fail" PATH="$WORK/stub-jq:$PATH" \
+  $CLI snapshots --dest test --json > "$WORK/fail.json" 2>/dev/null
+grep -q "stream-token" "$WORK/fail.json"
+check $? "a failed pre_command's diagnostics still reach the panel"
+grep -qa "config-only-token" "$WORK/jq-argv-fail" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and the failure message never carries the command text onto jq's command line"
+grep -qa "stream-token" "$WORK/jq-argv-fail" 2>/dev/null
+[ $? -ne 0 ]
+check $? "nor does the command's own output"
+
+rm -f "$WORK/jq-argv-fail"
+JQ_ARGV="$WORK/jq-argv-fail" PATH="$WORK/stub-jq:$PATH" \
+  $CLI backup --dest test >/dev/null 2>&1
+LATEST_LOG="$(ls -t "$XDG_STATE_HOME/omarchy-backitup/logs/test/"*.log 2>/dev/null | head -1)"
+[ -n "$LATEST_LOG" ]
+check $? "a backup with a failing pre_command writes its log"
+grep -q "config-only-token" "$LATEST_LOG"
+[ $? -ne 0 ]
+check $? "and the log names the event, not the command text"
+grep -qa "config-only-token" "$WORK/jq-argv-fail" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and the recorded failure never carries it onto jq's command line either"
+jq '.destinations[0].pre_command = ""' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+
+
 jq -e '.destinations.test.last_success_at != null' "$STATUS" >/dev/null 2>&1
 check $? "and a failed run keeps the previous last_success_at"
 
