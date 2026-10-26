@@ -458,6 +458,22 @@ grep -q "printf hooked" "$WORK/bash-argv" 2>/dev/null
 [ $? -ne 0 ]
 check $? "and the hook's text never sits on bash's command line"
 
+# The same class one destination earlier: a pre_command may embed a credential
+# too (a wake-up call with a key, say), and it runs on every backup and read.
+# It goes through the environment the same way. The repository is unreachable
+# here, which is fine -- pre_command runs before the reachability check, so
+# the marker proves the command ran and the argv file proves it ran quietly.
+jq ".destinations[0].pre_command = \"printf env-hook-token > $WORK/pre.txt\"" "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+rm -f "$WORK/pre.txt" "$WORK/bash-argv"
+STUB_ARGV="$WORK/bash-argv" PATH="$WORK/stub:$PATH" \
+  $CLI snapshots --dest test --json >/dev/null 2>&1
+[ -f "$WORK/pre.txt" ]
+check $? "a pre_command still runs when its text arrives through the environment"
+grep -q "env-hook-token" "$WORK/bash-argv" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and the pre_command's text never sits on bash's command line"
+jq '.destinations[0].pre_command = ""' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+
 # Later groups stub other commands in this same directory and run the CLI with
 # it on PATH; a leftover bash stub would sit in front of the real interpreter
 # for everything that follows.
@@ -652,6 +668,80 @@ jq -e '.destinations.test.last_success_at != null and .destinations.test.last_ru
   "$STATUS" >/dev/null 2>&1
 check $? "an unreachable run keeps the previous last_success_at"
 cp "$WORK/config.bak" "$CONFIG"
+
+# --- the password command --------------------------------------------------
+#
+# A password_command may embed a credential of its own -- a token in a header,
+# say. The config holds it in plain text, in the user's own file, which is
+# where it belongs. Arguments are a different matter: they sit in
+# /proc/<pid>/cmdline, readable by every account on the machine. So the
+# command travels through the environment, into restic and into jq, and never
+# onto a command line.
+
+group "The password command stays off the command line"
+
+cp "$WORK/config.bak" "$CONFIG"
+SECRET_COMMAND='curl -H "Authorization: Bearer s3cr3t-token" https://pw.example/get'
+jq --arg c "$SECRET_COMMAND" \
+  '.destinations[0] += {password_command: $c} | del(.destinations[0].password_file)' \
+  "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+
+# A stub jq records what it was handed. Its shebang is absolute on purpose: a
+# file named jq that resolves jq through PATH would exec itself forever.
+mkdir -p "$WORK/stub-jq"
+cat > "$WORK/stub-jq/jq" <<STUB
+#!/usr/bin/bash
+printf '%s\0' "\$@" >> "\$JQ_ARGV"
+exec $(command -v jq) "\$@"
+STUB
+chmod +x "$WORK/stub-jq/jq"
+rm -f "$WORK/jq-argv"
+
+JQ_ARGV="$WORK/jq-argv" PATH="$WORK/stub-jq:$PATH" \
+  $CLI status --json > "$WORK/status.json" 2>/dev/null
+
+grep -qa "s3cr3t-token" "$WORK/jq-argv" 2>/dev/null
+[ $? -ne 0 ]
+check $? "the password command never reaches jq's command line while polling"
+
+jq -e --arg c "$SECRET_COMMAND" '.destinations[0].password_command == $c' "$WORK/status.json" >/dev/null 2>&1
+check $? "but the panel still gets it, so the edit form can show it back"
+
+rm -rf "$WORK/stub-jq"
+cp "$WORK/config.bak" "$CONFIG"
+
+group_restic "The password command reaches restic through the environment"
+
+cp "$WORK/config.bak" "$CONFIG"
+jq --arg c "$SECRET_COMMAND" \
+  '.destinations[0] += {password_command: $c} | del(.destinations[0].password_file)' \
+  "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+
+# A stub restic records its arguments and the environment it was handed.
+mkdir -p "$WORK/stub-restic"
+cat > "$WORK/stub-restic/restic" <<'STUB'
+#!/usr/bin/bash
+printf '%s\0' "$@" >> "$RESTIC_ARGV"
+env | grep '^RESTIC_PASSWORD_COMMAND=' >> "$RESTIC_ENV"
+exit 0
+STUB
+chmod +x "$WORK/stub-restic/restic"
+rm -f "$WORK/restic-argv" "$WORK/restic-env"
+cp "$STATUS" "$WORK/status.bak" 2>/dev/null
+
+RESTIC_ARGV="$WORK/restic-argv" RESTIC_ENV="$WORK/restic-env" PATH="$WORK/stub-restic:$PATH" \
+  $CLI backup --dest test >/dev/null 2>&1
+
+grep -qa -- "--password-command" "$WORK/restic-argv" 2>/dev/null
+[ $? -ne 0 ]
+check $? "restic is never handed the password command as an argument"
+
+grep -qa "s3cr3t-token" "$WORK/restic-env" 2>/dev/null
+check $? "restic still gets it, through the environment"
+
+rm -rf "$WORK/stub-restic"
+cp "$WORK/config.bak" "$CONFIG"
+[ -f "$WORK/status.bak" ] && cp "$WORK/status.bak" "$STATUS"
 
 # --- saving the key to 1Password -------------------------------------------
 #

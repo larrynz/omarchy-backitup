@@ -500,8 +500,7 @@ sanitize_repository() {
 }
 
 # Exports everything restic needs. Values go into the environment, never into
-# argv. RESTIC_ARGS holds only non-secret flags.
-declare -a RESTIC_ARGS=()
+# argv: /proc/<pid>/cmdline is readable by every local account, environ is not.
 REPO_DISPLAY=""
 
 restic_context() {
@@ -520,15 +519,19 @@ restic_context() {
 
   password_file="$(expand_tilde "$(dest '.password_file // empty')")"
   password_command="$(dest '.password_command // empty')"
-  RESTIC_ARGS=()
 
   if [ -n "$password_file" ] && [ -n "$password_command" ]; then
     die "destination $DEST_NAME sets both password_file and password_command; pick one (silently choosing would mask a half-finished migration)"
   fi
 
   if [ -n "$password_command" ]; then
-    # restic runs this itself, so the password never reaches our argv.
-    RESTIC_ARGS=(--password-command "$password_command")
+    # restic runs the command itself, so the password never reaches our argv.
+    # The command may still embed a credential of its own (a token in a curl
+    # header, say), and --password-command would put it in restic's argv,
+    # where every local account can read it. restic takes the same value
+    # from RESTIC_PASSWORD_COMMAND in the environment instead.
+    unset RESTIC_PASSWORD_FILE
+    export RESTIC_PASSWORD_COMMAND="$password_command"
     return 0
   fi
 
@@ -536,6 +539,7 @@ restic_context() {
   user_file "$password_file" ||
     die "no key file at $password_file, run: omarchy-backitup key set --dest $DEST_NAME, or set password_command in the config if the destination fetches its own password"
   chmod 600 -- "$password_file" 2>/dev/null
+  unset RESTIC_PASSWORD_COMMAND
   export RESTIC_PASSWORD_FILE="$password_file"
   return 0
 }
@@ -555,10 +559,13 @@ over_byte_cap() {
   [ "$(printf '%s' "$1" | wc -c)" -gt "$2" ]
 }
 
-restic_run() { restic ${RESTIC_ARGS+"${RESTIC_ARGS[@]}"} "$@"; }
+restic_run() { restic "$@"; }
 
 # pre_command lives in the user's own configuration, so a shell string is as
-# legitimate here as restic's own --password-command. With a timeout, though: a
+# legitimate here as restic's own --password-command -- and it may embed a
+# credential of its own, so it travels through the environment like every
+# other secret: an env prefix reaches bash through timeout, and the string on
+# bash's command line is only the variable reference. With a timeout, though: a
 # NAS that refuses to wake up must not hang the run forever.
 # Whether the destination's repository can be reached at all, before restic
 # is asked anything. A local repository whose drive is not plugged in does
@@ -615,7 +622,7 @@ prepare_destination() {
   cmd="$(dest '.pre_command // empty')"
   if [ -n "$cmd" ]; then
     log_line "pre_command: $cmd"
-    timeout "$PRE_COMMAND_TIMEOUT" bash -c "$cmd" >&2
+    PRE_COMMAND="$cmd" timeout "$PRE_COMMAND_TIMEOUT" bash -c 'eval "$PRE_COMMAND"' >&2
     status=$?
     if [ "$status" != "0" ]; then
       [ "$status" = "124" ] && printf 'pre_command of %s timed out (>%ss)\n' "$DEST_NAME" "$PRE_COMMAND_TIMEOUT" >&2
@@ -1226,7 +1233,7 @@ cmd_status() {
          monthly: ($d.monthly // $g.monthly // 12),
          yearly:  ($d.yearly  // $g.yearly  // 3)}' <<<"$CONFIG_JSON")"
 
-    out="$(jq -c \
+    out="$(PWC="$pwc" jq -c \
       --arg name "$name" \
       --arg label "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .display_name // $n' <<<"$CONFIG_JSON")" \
       --arg repo "$repo" \
@@ -1235,7 +1242,6 @@ cmd_status() {
       --argjson running "$running" \
       --argjson progress "$progress" \
       --arg pwmode "$pwmode" \
-      --arg pwc "$pwc" \
       --argjson ssnap "$ssnap" \
       --argjson ret "$ret" \
       '. + [$stored + {name:$name, display_name:$label,
@@ -1244,7 +1250,7 @@ cmd_status() {
                        password_mode:$pwmode,
                        system_snapshot_enabled:$ssnap,
                        retention:$ret,
-                       password_command:(if $pwc == "" then null else $pwc end),
+                       password_command:(if ($ENV.PWC // "") == "" then null else $ENV.PWC end),
                        repository_display:(if $repo == "" then ($stored.repository_display // "") else $repo end),
                        progress:(if $running then $progress else null end)}]' <<<"$out")"
   done < <(cfg '.destinations[].name')
@@ -1259,10 +1265,16 @@ cmd_status() {
   # plugin never shows a control that cannot work.
   local snap_available=false
   if system_snapshot_cmd >/dev/null 2>&1; then snap_available=true; fi
-  jq -nc --argjson d "$out" --argjson installed "$installed" --argjson src "$src" \
-    --argjson snapavail "$snap_available" \
-    '{ok:true, configured:true, invalid:false, units_installed:$installed, source:$src,
-      system_snapshot_available:$snapavail, destinations:$d}'
+  # The destinations array carries the password_command, so it travels through
+  # the environment rather than as --argjson: arguments sit in
+  # /proc/<pid>/cmdline, where every local account can read them.
+  DESTINATIONS="$out" INSTALLED="$installed" SOURCE="$src" SNAPAVAILABLE="$snap_available" \
+    jq -nc '($ENV.DESTINATIONS | fromjson) as $d
+            | ($ENV.INSTALLED | fromjson) as $installed
+            | ($ENV.SOURCE | fromjson) as $src
+            | ($ENV.SNAPAVAILABLE | fromjson) as $snapavail
+            | {ok:true, configured:true, invalid:false, units_installed:$installed, source:$src,
+               system_snapshot_available:$snapavail, destinations:$d}'
 }
 
 cmd_init() {
