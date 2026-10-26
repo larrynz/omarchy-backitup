@@ -2084,15 +2084,17 @@ record_status() {
 
 # Per destination, with the global one as fallback. The values travel through
 # the environment rather than as arguments: a destination name comes out of
-# config.json and is therefore input.
+# config.json and is therefore input, and the command may embed a credential
+# (a webhook URL with a token, say) that must not sit where /proc/<pid>/cmdline
+# would show it to every local account.
 run_failure_command() {
   local exit_code="$1" logfile="$2" cmd
   cmd="$(dest '.on_failure_command // empty')"
   cmd="${cmd:-$(cfg '.on_failure_command // empty')}"
   if [ -z "$cmd" ]; then return 0; fi
 
-  DESTINATION="$DEST_NAME" EXIT_CODE="$exit_code" LOG_FILE="$logfile" \
-    setsid bash -c "$cmd" >/dev/null 2>&1 &
+  ON_FAILURE_COMMAND="$cmd" DESTINATION="$DEST_NAME" EXIT_CODE="$exit_code" LOG_FILE="$logfile" \
+    setsid bash -c 'eval "$ON_FAILURE_COMMAND"' >/dev/null 2>&1 &
   return 0
 }
 
@@ -2533,15 +2535,20 @@ cmd_apply_setup() {
   load_config
 
   local obj
-  obj="$(jq -cn --arg n "$name" --arg dn "$display_name" --arg r "$repository" --arg s "$schedule" \
+  # The repository URL may embed the remote-storage password (README:
+  # sftp:me:secret@nas), and arguments sit in /proc/<pid>/cmdline, readable by
+  # every account on the machine. The URL and the object assembled from it
+  # travel through the environment instead -- /proc/<pid>/environ is
+  # owner-only. The same goes for password_command further down.
+  obj="$(REPOSITORY_URL="$repository" jq -cn --arg n "$name" --arg dn "$display_name" --arg s "$schedule" \
     --argjson ss "${syssnap:-null}" \
     --argjson ret "${retention:-null}" \
-    '{name: $n, display_name: $dn, repository: $r}
+    '{name: $n, display_name: $dn, repository: $ENV.REPOSITORY_URL}
      + (if $s == "" then {} else {schedule: $s} end)
      + (if $ss == null then {} else $ss end)
      + (if $ret == null then {} else $ret end)')"
   if [ "$fresh" = "1" ]; then
-    CONFIG_JSON="$(jq --argjson d "$obj" '.destinations = [$d]' <<<"$CONFIG_JSON")" \
+    CONFIG_JSON="$(DESTINATION="$obj" jq '.destinations = [($ENV.DESTINATION | fromjson)]' <<<"$CONFIG_JSON")" \
       || die "could not set the destination in the configuration"
   else
     # Merge, not replace: the document's fields overwrite the destination's,
@@ -2550,8 +2557,9 @@ cmd_apply_setup() {
     # an edit that only changed the schedule would leave the destination with
     # no password source at all. A schedule left out of the document means
     # "none", so the old one is removed rather than kept.
-    CONFIG_JSON="$(jq --argjson d "$obj" \
-      '(.destinations = ((.destinations // []) |
+    CONFIG_JSON="$(DESTINATION="$obj" jq \
+      '($ENV.DESTINATION | fromjson) as $d |
+       (.destinations = ((.destinations // []) |
          (if any(.[]; .name == $d.name)
           then map(if .name == $d.name
                    then (if ($d | has("schedule")) then (. + $d) else (. + $d | del(.schedule)) end)
@@ -2610,19 +2618,21 @@ cmd_apply_setup() {
     rm -f -- "$CONFIG_DIR/$DEST_NAME.key"
     # map, not an assignment on a filtered path: jq's `=` emits the updated
     # subdocument per match, and the config file would end up holding the
-    # destination object instead of the configuration around it.
-    if ! jq --arg n "$DEST_NAME" --arg c "$password_command" \
-      '.destinations = ((.destinations // []) | map(if .name == $n then . + {password_command: $c} | del(.password_file) else . end))' <<<"$CONFIG_JSON" \
+    # destination object instead of the configuration around it. The command
+    # may itself embed a credential (a token in a URL, say), so it travels
+    # through the environment rather than as an argument.
+    if ! PASSWORD_COMMAND="$password_command" jq --arg n "$DEST_NAME" \
+      '.destinations = ((.destinations // []) | map(if .name == $n then . + {password_command: $ENV.PASSWORD_COMMAND} | del(.password_file) else . end))' <<<"$CONFIG_JSON" \
       | write_private "$CONFIG_FILE"; then
       die "could not record password_command in $CONFIG_FILE"
     fi
-    CONFIG_JSON="$(jq --arg n "$DEST_NAME" --arg c "$password_command" \
-      '.destinations = ((.destinations // []) | map(if .name == $n then . + {password_command: $c} | del(.password_file) else . end))' <<<"$CONFIG_JSON")"
+    CONFIG_JSON="$(PASSWORD_COMMAND="$password_command" jq --arg n "$DEST_NAME" \
+      '.destinations = ((.destinations // []) | map(if .name == $n then . + {password_command: $ENV.PASSWORD_COMMAND} | del(.password_file) else . end))' <<<"$CONFIG_JSON")"
     # dest() reads the DEST_JSON snapshot taken before the password blocks:
     # the follow-up "no password" check must see the command, not the stale
     # snapshot without one.
-    DEST_JSON="$(jq --arg c "$password_command" \
-      '.password_command = $c | del(.password_file)' <<<"$DEST_JSON")"
+    DEST_JSON="$(PASSWORD_COMMAND="$password_command" jq \
+      '.password_command = $ENV.PASSWORD_COMMAND | del(.password_file)' <<<"$DEST_JSON")"
     printf 'Password fetched with a command: %s\n' "$password_command"
   fi
 

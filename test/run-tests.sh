@@ -429,10 +429,39 @@ $CLI backup --dest test >/dev/null 2>&1
 jq -e '.destinations.test.last_run.result == "failed"' "$STATUS" >/dev/null 2>&1
 check $? "a failed run is recorded as failed"
 
+rm -f "$WORK/hook.txt"
 $CLI report-failure --dest test >/dev/null 2>&1
 sleep 1
 [ -f "$WORK/hook.txt" ]
 check $? "the OnFailure path runs on_failure_command"
+
+# The command itself travels through the environment now, not as a bash -c
+# argument: a failure hook may embed a credential (a webhook URL with a
+# token, say), and arguments sit in /proc/PID/cmdline where every local
+# account can read them. A stub bash records what it was handed. Its shebang
+# is absolute on purpose: a file named bash that resolves bash through PATH
+# would exec itself forever.
+mkdir -p "$WORK/stub"
+cat > "$WORK/stub/bash" <<STUB
+#!/usr/bin/bash
+printf '%s\0' "\$@" >> "\$STUB_ARGV"
+exec $(command -v bash) "\$@"
+STUB
+chmod +x "$WORK/stub/bash"
+rm -f "$WORK/hook.txt" "$WORK/bash-argv"
+STUB_ARGV="$WORK/bash-argv" PATH="$WORK/stub:$PATH" \
+  $CLI report-failure --dest test >/dev/null 2>&1
+sleep 1
+[ -f "$WORK/hook.txt" ]
+check $? "the hook still runs when its text arrives through the environment"
+grep -q "printf hooked" "$WORK/bash-argv" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and the hook's text never sits on bash's command line"
+
+# Later groups stub other commands in this same directory and run the CLI with
+# it on PATH; a leftover bash stub would sit in front of the real interpreter
+# for everything that follows.
+rm -f "$WORK/stub/bash"
 
 # The reason, not the exit code. restic reports fatal errors as JSON on stderr
 # when --json is set, so it lands in the log rather than in the stdout stream
@@ -1000,6 +1029,53 @@ check $? "apply-setup refuses a name with a space"
 OUT="$(printf '%s' '{"name":"nopass","repository":"'"$WORK"'/nopass-repo"}' | $CLI apply-setup 2>&1)"
 grep -q "no password" <<<"$OUT"
 check $? "apply-setup refuses a destination with no password"
+
+# The repository URL may embed the remote-storage password (sftp:me:secret@nas),
+# and apply-setup hands the URL plus the object assembled from it to jq. An
+# --arg/--argjson value sits on jq's own command line, where /proc/PID/cmdline
+# is readable by every account on the machine, so both travel through the
+# environment now. A wrapper records jq's arguments so the assertion means
+# something even though jq is ephemeral, and a stub restic keeps the sftp URL
+# away from real restic and ssh.
+cp "$C" "$C.cmdline-bak"
+mkdir -p "$WORK/stub"
+cat > "$WORK/stub/jq" <<STUB
+#!/usr/bin/env bash
+printf '%s\0' "\$@" >> "\$JQ_ARGV"
+exec $(command -v jq) "\$@"
+STUB
+cat > "$WORK/stub/restic" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$WORK/stub/jq" "$WORK/stub/restic"
+rm -f "$WORK/jq-argv-setup"
+JQ_ARGV="$WORK/jq-argv-setup" PATH="$WORK/stub:$PATH" \
+  $CLI apply-setup >/dev/null 2>&1 <<DOC
+{"name":"cmdline-test","repository":"sftp:me:sekret@nas:/volume1/backup","schedule":"daily","password":"setup-password"}
+DOC
+grep -q "sekret" "$WORK/jq-argv-setup" 2>/dev/null
+[ $? -ne 0 ]
+check $? "a password-bearing repository URL never reaches jq's command line"
+jq -e '.destinations[] | select(.name=="cmdline-test") | .repository == "sftp:me:sekret@nas:/volume1/backup"' "$C" >/dev/null
+check $? "and the URL still lands intact in the configuration"
+
+# A first run takes the fresh-configuration branch, whose jq call is its own;
+# it gets the same treatment.
+mv "$C" "$C.away"
+rm -f "$WORK/jq-argv-setup"
+JQ_ARGV="$WORK/jq-argv-setup" PATH="$WORK/stub:$PATH" \
+  $CLI apply-setup >/dev/null 2>&1 <<DOC
+{"name":"cmdline-test","repository":"sftp:me:sekret@nas:/volume1/backup","schedule":"daily","password":"setup-password"}
+DOC
+grep -q "sekret" "$WORK/jq-argv-setup" 2>/dev/null
+[ $? -ne 0 ]
+check $? "the fresh-configuration branch keeps the URL off the command line too"
+jq -e '.destinations[0].repository == "sftp:me:sekret@nas:/volume1/backup"' "$C" >/dev/null
+check $? "and still writes the destination"
+mv "$C.away" "$C"
+rm -f "$XDG_CONFIG_HOME/omarchy-backitup/cmdline-test.key"
+rm -f "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup@cmdline-test."*
 
 U="$XDG_CONFIG_HOME/systemd/user"
 
