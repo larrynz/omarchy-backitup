@@ -817,7 +817,12 @@ progress_write() {
   epoch="$(date +%s)"
   elapsed=$((epoch - PROGRESS_STARTED))
 
-  jq -nc \
+  # The extra travels in the environment, never on jq's command line: it
+  # carries the name of the file restic is working on, and a command line is
+  # world-readable under /proc for as long as the call lasts. The panel polls
+  # this file, so the name would otherwise be on display for the whole of
+  # every backup. /proc/<pid>/environ is owner-only.
+  BACKITUP_PROGRESS_EXTRA="$extra" jq -nc \
     --arg state "$state" \
     --arg kind "$PROGRESS_KIND" \
     --arg phase "$phase" \
@@ -826,11 +831,10 @@ progress_write() {
     --argjson pid "$$" \
     --arg updated "$(date -Iseconds)" \
     --argjson updated_epoch "$epoch" \
-    --argjson extra "$extra" \
     '{state:$state, kind:$kind, phase:$phase, seconds_elapsed:$elapsed,
       unit:(if $unit == "" then null else $unit end), pid:$pid,
       updated_at:$updated, updated_epoch:$updated_epoch}
-     + $extra' | write_private "$PROGRESS_FILE"
+     + ($ENV.BACKITUP_PROGRESS_EXTRA | fromjson)' | write_private "$PROGRESS_FILE"
   return 0
 }
 
@@ -1243,14 +1247,15 @@ cmd_status() {
     # stored is the destination's previous status record: its last_run.error
     # quotes whatever restic or a pre_command printed on the previous run, so
     # like every message-shaped value it travels in the environment, never on
-    # jq's command line.
-    out="$(PWC="$pwc" BACKITUP_STORED="$(jq -c --arg n "$name" '.destinations[$n] // {}' <<<"$status")" jq -c \
+    # jq's command line. The progress object travels the same way: it names
+    # the file restic is working on, and the panel polls this status often.
+    out="$(PWC="$pwc" BACKITUP_STORED="$(jq -c --arg n "$name" '.destinations[$n] // {}' <<<"$status")" \
+      BACKITUP_PROGRESS="$progress" jq -c \
       --arg name "$name" \
       --arg label "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .display_name // $n' <<<"$CONFIG_JSON")" \
       --arg repo "$repo" \
       --arg schedule "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .schedule // ""' <<<"$CONFIG_JSON")" \
       --argjson running "$running" \
-      --argjson progress "$progress" \
       --arg pwmode "$pwmode" \
       --argjson ssnap "$ssnap" \
       --argjson ret "$ret" \
@@ -1262,7 +1267,7 @@ cmd_status() {
                        retention:$ret,
                        password_command:(if ($ENV.PWC // "") == "" then null else $ENV.PWC end),
                        repository_display:(if $repo == "" then (($ENV.BACKITUP_STORED | fromjson).repository_display // "") else $repo end),
-                       progress:(if $running then $progress else null end)}]' <<<"$out")"
+                       progress:(if $running then ($ENV.BACKITUP_PROGRESS | fromjson) else null end)}]' <<<"$out")"
   done < <(cfg '.destinations[].name')
 
   # The folders to back up, always an array here: the panel seeds its setup
@@ -1362,17 +1367,20 @@ cmd_ls() {
   # jq ever hold it.
   out="$(restic_run ls --json -- "$OPT_SNAPSHOT" "$path" 2>/dev/null | head -n "$LS_LINE_CAP" | head -c "$((LS_BYTE_CAP + 1))")"
   if over_byte_cap "$out" "$LS_BYTE_CAP"; then
-    jq -nc --arg p "$path" '{ok:false, error:"listing too large to read safely", path:$p, entries:[]}'; return 0
+    BACKITUP_LS_PATH="$path" jq -nc '{ok:false, error:"listing too large to read safely", path:$ENV.BACKITUP_LS_PATH, entries:[]}'; return 0
   fi
   [ -n "$out" ] ||
-    { jq -nc --arg p "$path" '{ok:false, error:"could not list snapshot", path:$p, entries:[]}'; return 0; }
+    { BACKITUP_LS_PATH="$path" jq -nc '{ok:false, error:"could not list snapshot", path:$ENV.BACKITUP_LS_PATH, entries:[]}'; return 0; }
 
-  jq -sc --arg path "$path" --argjson cap "$LS_ENTRY_CAP" '
-    [ .[] | select(has("name") and (.path // "") != $path)
+  # The browsed path rides in the environment rather than on jq's command
+  # line: the path can sit inside a directory the user keeps private, and a
+  # command line is world-readable under /proc for as long as the call lasts.
+  BACKITUP_LS_PATH="$path" jq -sc --argjson cap "$LS_ENTRY_CAP" '
+    [ .[] | select(has("name") and (.path // "") != $ENV.BACKITUP_LS_PATH)
           | {name, type, path, size, mtime} ]
     | sort_by([(if .type == "dir" then 0 else 1 end), (.name | ascii_downcase)])
-    | {ok:true, path:$path, truncated:(length > $cap), entries:(.[0:$cap])}' <<<"$out" 2>/dev/null ||
-    jq -nc --arg p "$path" '{ok:false, error:"unexpected ls output", path:$p, entries:[]}'
+    | {ok:true, path:$ENV.BACKITUP_LS_PATH, truncated:(length > $cap), entries:(.[0:$cap])}' <<<"$out" 2>/dev/null ||
+    BACKITUP_LS_PATH="$path" jq -nc '{ok:false, error:"unexpected ls output", path:$ENV.BACKITUP_LS_PATH, entries:[]}'
 }
 
 cmd_log() {
@@ -2229,12 +2237,16 @@ open_in_file_manager() {
 # the notification body itself, which this shell's daemon supports (it lists
 # "actions" among its capabilities).
 notify_restore_done() {
-  local target="$1" selected="$2"
+  local selected="$1"
   [ -n "${OMARCHY_BACKITUP_QUIET:-}" ] && return 0
   (
+    # The body is static text. The target is a path in the user's home, and
+    # this notify-send process lives until the notification is dismissed, with
+    # its arguments world-readable under /proc the whole time. Clicking it
+    # opens the folder anyway, so the path is not what the message is for.
     action="$(timeout 3600 notify-send -i "$(icon_for icon)" \
       -A "default=Show in Files" \
-      -- "Restore complete" "Restored into $target" 2>/dev/null)"
+      -- "Restore complete" "The restored files are in your restore folder." 2>/dev/null)"
     [ "$action" = "default" ] && open_in_file_manager "$selected"
   ) >/dev/null 2>&1 &
   return 0
@@ -2320,7 +2332,7 @@ cmd_restore() {
   rm -f -- "$includes_file"
 
   progress_write "$([ "$restore_exit" = "0" ] && echo done || echo failed)" restore 1 \
-    "$(jq -nc --arg t "$target" '{percent:1.0, target:$t}')"
+    "$(BACKITUP_RESTORE_TARGET="$target" jq -nc '{percent:1.0, target:$ENV.BACKITUP_RESTORE_TARGET}')"
 
   if [ "$restore_exit" = "0" ]; then
     # restic reproduces the full original path under the target, so this is
@@ -2328,8 +2340,13 @@ cmd_restore() {
     # single item to open, and the target root is the honest answer.
     local landed="$target"
     if [ "${#paths[@]}" -eq 1 ]; then landed="$target${paths[0]}"; fi
-    notify_restore_done "$target" "$landed"
-    jq -nc --arg t "$target" --arg s "$landed" '{ok:true, target:$t, restored:$s}'
+    notify_restore_done "$landed"
+    # The target and the path the restored item landed on go into the
+    # environment: the landed path reproduces the original path under the
+    # target, so it names a file the user keeps private. A command line is
+    # world-readable under /proc for as long as the call lasts.
+    BACKITUP_RESTORE_TARGET="$target" BACKITUP_RESTORE_LANDED="$landed" \
+      jq -nc '{ok:true, target:$ENV.BACKITUP_RESTORE_TARGET, restored:$ENV.BACKITUP_RESTORE_LANDED}'
   else
     jq -nc --arg e "restic restore exited $restore_exit" '{ok:false, error:$e}'
   fi
@@ -2637,7 +2654,7 @@ cmd_apply_setup() {
   # source the config had -- the setup form seeds from the existing list, so
   # what it shows is what gets written.
   if [ -n "$src_json" ]; then
-    CONFIG_JSON="$(jq --argjson src "$src_json" '.source = $src' <<<"$CONFIG_JSON")" \
+    CONFIG_JSON="$(BACKITUP_SOURCE="$src_json" jq '.source = ($ENV.BACKITUP_SOURCE | fromjson)' <<<"$CONFIG_JSON")" \
       || die "could not set the source in the configuration"
   fi
   write_private "$CONFIG_FILE" <<<"$CONFIG_JSON" || die "could not write $CONFIG_FILE"

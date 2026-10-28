@@ -848,6 +848,18 @@ cp "$WORK/config.bak" "$CONFIG"
 # must appear in neither.
 group "Command lines"
 
+# jq is where a path slips onto a command line: every value the plugin hands
+# jq as an argument sits in /proc for the length of the call. A wrapper
+# records each command line so the audit can look for paths in them.
+mkdir -p "$WORK/stub-bin"
+REAL_JQ="$(command -v jq)"
+cat > "$WORK/stub-bin/jq" <<STUB
+#!/usr/bin/bash
+printf '%s\n' "\$@" >> "\${JQ_ARGV_LOG:-/dev/null}"
+exec "$REAL_JQ" "\$@"
+STUB
+chmod +x "$WORK/stub-bin/jq"
+
 mkdir -p "$WORK/stub-restic"
 cat > "$WORK/stub-restic/restic" <<'STUB'
 #!/usr/bin/bash
@@ -864,7 +876,7 @@ exit 0
 STUB
 chmod +x "$WORK/stub-restic/restic"
 jq --arg s "$WORK/src" --arg x "*.cache" \
-   '.destinations[0].source = $s | .excludes = [$x]' \
+   '.source = $s | .excludes = [$x]' \
    "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
 rm -f "$WORK/restic-argv" "$WORK/restic-files" "$WORK/cli-argv" "$WORK/cli-argv2" "$WORK/cli-argv3"
 RESTIC_ARGV="$WORK/restic-argv" RESTIC_FILES="$WORK/restic-files" RESTIC_PARENT="$WORK/cli-argv" \
@@ -886,10 +898,12 @@ grep -q -- "$WORK/src" "$WORK/cli-argv"
 [ $? -ne 0 ]
 check $? "and not on the CLI's own command line either"
 
-rm -f "$WORK/restic-argv" "$WORK/restic-files"
+rm -f "$WORK/restic-argv" "$WORK/restic-files" "$WORK/jq-argv"
 BACKITUP_RESTORE_PATHS="$WORK/src/docs/report.md" \
   RESTIC_ARGV="$WORK/restic-argv" RESTIC_FILES="$WORK/restic-files" RESTIC_PARENT="$WORK/cli-argv2" \
-  PATH="$WORK/stub-restic:$PATH" $CLI restore --dest test --snapshot 12345678 >/dev/null 2>&1
+  JQ_ARGV_LOG="$WORK/jq-argv" \
+  PATH="$WORK/stub-bin:$WORK/stub-restic:$PATH" $CLI restore --dest test --snapshot 12345678 \
+  --target "$WORK/restore-target" > "$WORK/restore-out.json" 2>/dev/null
 grep -q -- "--include-file" "$WORK/restic-argv"
 check $? "restic reads the restore paths from a file"
 grep -q -- "$WORK/src/docs/report.md" "$WORK/restic-argv"
@@ -900,6 +914,35 @@ check $? "the include file holds the requested path"
 grep -q -- "$WORK/src/docs/report.md" "$WORK/cli-argv2"
 [ $? -ne 0 ]
 check $? "and the panel's env handoff keeps it off the CLI's own command line"
+grep -q -- "$WORK/restore-target$WORK/src/docs/report.md" "$WORK/jq-argv"
+[ $? -ne 0 ]
+check $? "and the path a restored item landed on never sits on jq's command line"
+jq -e --arg t "$WORK/restore-target" --arg r "$WORK/restore-target$WORK/src/docs/report.md" \
+  '.ok == true and .target == $t and .restored == $r' "$WORK/restore-out.json" >/dev/null 2>&1
+check $? "and the panel still receives where the restored file landed"
+
+# The restore notification lives until it is dismissed, and the target is a
+# path in the user's home. The body stays static, the way the failure
+# notification's does.
+cat > "$WORK/stub/notify-send" <<STUB
+#!/usr/bin/bash
+printf '%s\0' "\$@" >> "\$NS_ARGV"
+exit 0
+STUB
+chmod +x "$WORK/stub/notify-send"
+rm -f "$WORK/ns-argv" "$WORK/restic-argv" "$WORK/restic-files"
+NS_ARGV="$WORK/ns-argv" OMARCHY_BACKITUP_QUIET= \
+  BACKITUP_RESTORE_PATHS="$WORK/src/docs/report.md" \
+  RESTIC_ARGV="$WORK/restic-argv" RESTIC_FILES="$WORK/restic-files" RESTIC_PARENT="$WORK/cli-argv2" \
+  PATH="$WORK/stub-bin:$WORK/stub:$WORK/stub-restic:$PATH" \
+  $CLI restore --dest test --snapshot 12345678 --target "$WORK/restore-target" >/dev/null 2>&1
+sleep 0.3
+grep -q "Restore complete" "$WORK/ns-argv" 2>/dev/null
+check $? "the restore notification still appears"
+grep -q -- "$WORK/restore-target" "$WORK/ns-argv" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and the restore target never reaches its command line"
+rm -f "$WORK/stub/notify-send"
 
 # The same handoff for the restore browser: the browsed path arrives through
 # the environment, and a stub restic answers with a listing under it.
@@ -912,18 +955,93 @@ printf '%s\n' '{"message_type":"ls","struct_type":"node","name":"docs","type":"d
 exit 0
 STUB
 chmod +x "$WORK/stub-restic/restic"
-rm -f "$WORK/restic-argv"
+rm -f "$WORK/restic-argv" "$WORK/jq-argv"
 BACKITUP_LS_PATH="$WORK/src" RESTIC_ARGV="$WORK/restic-argv" RESTIC_PARENT="$WORK/cli-argv3" \
-  PATH="$WORK/stub-restic:$PATH" $CLI ls --dest test --snapshot 12345678 --json > "$WORK/ls-out.json" 2>/dev/null
+  JQ_ARGV_LOG="$WORK/jq-argv" \
+  PATH="$WORK/stub-bin:$WORK/stub-restic:$PATH" $CLI ls --dest test --snapshot 12345678 --json > "$WORK/ls-out.json" 2>/dev/null
 jq -e --arg p "$WORK/src" '.ok == true and .path == $p and .entries[0].name == "docs"' \
   "$WORK/ls-out.json" >/dev/null 2>&1
 check $? "ls reads the browsed path from the environment"
 grep -q -- "$WORK/src" "$WORK/cli-argv3"
 [ $? -ne 0 ]
 check $? "and keeps it off the CLI's own command line"
+grep -q -- "$WORK/src" "$WORK/jq-argv"
+[ $? -ne 0 ]
+check $? "and off jq's command line too"
+
+# The folders to back up reach the config through the setup document, and
+# the merge that writes them hands the list to jq as an argument.
+rm -f "$WORK/jq-argv"
+JQ_ARGV_LOG="$WORK/jq-argv" PATH="$WORK/stub-bin:$PATH" \
+  $CLI apply-setup >/dev/null 2>&1 <<EOF
+{"name":"argv-test","repository":"$WORK/argv-repo","schedule":"daily","password":"argv-password","source":["$WORK/src"]}
+EOF
+grep -q -- "$WORK/src" "$WORK/jq-argv"
+[ $? -ne 0 ]
+check $? "the folders to back up never sit on jq's command line"
+jq -e --arg s "$WORK/src" '.source == [$s]' "$CONFIG" >/dev/null 2>&1
+check $? "and the config still records them"
+rm -f "$XDG_CONFIG_HOME/omarchy-backitup/argv-test.key"
+rm -f "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup@argv-test.timer"
+rm -f "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup@argv-test.service"
+rm -rf "$WORK/argv-repo"
 
 rm -rf "$WORK/stub-restic"
 cp "$WORK/config.bak" "$CONFIG"
+
+# --- progress metadata -----------------------------------------------------
+#
+# restic's status lines name the file it is working on, and the panel shows
+# that name. Carrying it to jq as an argument puts it on a command line that
+# every local account can read, and the panel polls the status often enough
+# to repeat the exposure for the whole of a backup. The jq wrapper records
+# every command line the CLI hands it; the name must appear in none of them.
+group "Progress metadata"
+
+MARKER="$WORK/src/private-restic-token/ledger.pdf"
+PROGRESS="$XDG_STATE_HOME/omarchy-backitup/progress-test.json"
+mkdir -p "$WORK/stub"
+
+# The stub waits long enough for the progress interval to pass, reports the
+# file it is working on, then copies the progress file the CLI wrote from
+# that line. The copy is what proves the name was really in flight.
+cat > "$WORK/stub/restic" <<'STUB'
+#!/usr/bin/bash
+if [ "$1" = "backup" ]; then
+  sleep 0.6
+  printf '{"message_type":"status","percent_done":0.5,"files_done":1,"total_files":2,"bytes_done":10,"total_bytes":20,"current_files":["%s"]}\n' "$MARKER_PATH"
+  sleep 0.6
+  cp -- "$PROGRESS_FILE_SRC" "$PROGRESS_FILE_DST" 2>/dev/null
+  printf '%s\n' '{"message_type":"summary","percent_done":1.0,"files_done":2,"total_files":2,"bytes_done":20,"total_bytes":20}'
+fi
+exit 0
+STUB
+chmod +x "$WORK/stub/restic"
+
+rm -f "$WORK/jq-argv" "$WORK/progress-captured.json"
+MARKER_PATH="$MARKER" JQ_ARGV_LOG="$WORK/jq-argv" \
+  PROGRESS_FILE_SRC="$PROGRESS" PROGRESS_FILE_DST="$WORK/progress-captured.json" \
+  PATH="$WORK/stub-bin:$WORK/stub:$PATH" $CLI backup --dest test >/dev/null 2>&1
+grep -q -- "$MARKER" "$WORK/progress-captured.json"
+check $? "the name of the file restic is working on reaches the progress file"
+grep -q -- "$MARKER" "$WORK/jq-argv"
+[ $? -ne 0 ]
+check $? "and stays off jq's command line while the backup runs"
+
+# The same name travels again when the panel polls the status.
+jq --arg p "$MARKER" '.state = "running" | .updated_epoch = (now | floor) | .current_file = $p' \
+  "$PROGRESS" > "$PROGRESS.n" && mv "$PROGRESS.n" "$PROGRESS"
+rm -f "$WORK/jq-argv"
+JQ_ARGV_LOG="$WORK/jq-argv" PATH="$WORK/stub-bin:$PATH" \
+  $CLI status --json > "$WORK/status-out.json" 2>/dev/null
+grep -q -- "$MARKER" "$WORK/jq-argv"
+[ $? -ne 0 ]
+check $? "and stays off jq's command line while the panel polls the status"
+jq -e --arg p "$MARKER" '.destinations[0].progress.current_file == $p' \
+  "$WORK/status-out.json" >/dev/null 2>&1
+check $? "and the panel still receives the name of the file being backed up"
+
+rm -rf "$WORK/stub-bin" "$WORK/stub"
 
 # --- saving the key to 1Password -------------------------------------------
 #
