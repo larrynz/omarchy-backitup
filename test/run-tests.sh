@@ -222,6 +222,28 @@ jq -e --arg p "$WORK/src/docs/report.md" \
   '.destinations.test.last_run.error | test($p)' "$STATUS" >/dev/null 2>&1
 check $? "the reason names the file that could not be read"
 
+# restic reports the same path twice per scan pass sometimes, and the file of
+# unreadable paths is written raw. The duplicate is dropped when the reason is
+# built, on read. A stub restic emits the same path as two error lines: the
+# reason must still count one file, not "and 1 more".
+mkdir -p "$WORK/stub"
+cat > "$WORK/stub/restic" <<STUB
+#!/usr/bin/bash
+printf '%s\n' '{"message_type":"error","error":{"message":"could not open file"},"item":"$WORK/src/private-restic-token/ledger"}'
+printf '%s\n' '{"message_type":"error","error":{"message":"could not open file"},"item":"$WORK/src/private-restic-token/ledger"}'
+printf '%s\n' '{"message_type":"summary","percent_done":1.0,"files_done":3,"total_files":3,"bytes_done":9,"total_bytes":9}'
+exit 3
+STUB
+chmod +x "$WORK/stub/restic"
+PATH="$WORK/stub:$PATH" $CLI backup --dest test >/dev/null 2>&1
+[ $? -eq 1 ]
+check $? "a stub restic's exit 3 fails the run"
+jq -e --arg p "$WORK/src/private-restic-token/ledger" \
+  '.destinations.test.last_run.error == "could not read " + $p' "$STATUS" >/dev/null 2>&1
+check $? "a doubled unreadable line is deduplicated on read"
+rm -f "$WORK/stub/restic"
+rm -rf "$WORK/src/private-restic-token"
+
 [ "$(jq -r '.destinations.test.last_success_at' "$STATUS")" = "$GOOD_SUCCESS" ]
 check $? "last_success_at still points at the last run that read everything"
 

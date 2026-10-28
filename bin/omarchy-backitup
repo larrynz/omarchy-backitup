@@ -1865,16 +1865,15 @@ stream_backup() {
         # run ends in exit 3, so they are kept rather than only logged: the
         # status record counts them and names the first one, and the panel
         # reads that from a file only this account can open.
-        # Deduplicated on write: restic can report the same path twice in one
-        # run (once per scan pass), and a doubled line would make the
-        # notification say "and 1 more" for a single path.
+        # Written raw, duplicates included: restic can report the same path
+        # twice in one run (once per scan pass). unreadable_reason drops
+        # duplicates on read, because checking for the path here with grep
+        # would put it on a command line, however briefly.
         message="$(jq -r '.error.message // "unknown error"' <<<"$line" 2>/dev/null)"
         item="$(jq -r '.item // ""' <<<"$line" 2>/dev/null)"
         log_line "restic: $message"
         entry="${item:-$message}"
-        if [ -n "$entry" ] && ! grep -qxF -- "$entry" "$unreadable_file" 2>/dev/null; then
-          printf '%s\n' "$entry" >> "$unreadable_file"
-        fi
+        [ -n "$entry" ] && printf '%s\n' "$entry" >> "$unreadable_file"
         ;;
       exit_error)
         # restic closes a failed --json run with this line on stderr. It only
@@ -1918,11 +1917,16 @@ path_excluded() {
 }
 
 unreadable_reason() {
-  local count first
+  local dedup count first
   if ! readable_file "$UNREADABLE_FILE"; then return 0; fi
-  count="$(number_or "$(grep -c '' -- "$UNREADABLE_FILE" 2>/dev/null)" 0)"
+  # Deduplicated here on purpose: restic can report the same path twice in
+  # one run, and grep could not be used at write time without putting the
+  # path on a command line. awk keeps the first-seen order, and the paths
+  # travel through a pipe, never through argv.
+  dedup="$(awk '!seen[$0]++' "$UNREADABLE_FILE" 2>/dev/null)"
+  count="$(number_or "$(grep -c '' <<<"$dedup")" 0)"
   if [ "$count" -le 0 ]; then return 0; fi
-  first="$(head -1 -- "$UNREADABLE_FILE" 2>/dev/null)"
+  first="$(head -1 <<<"$dedup")"
   if [ "$count" = "1" ]; then
     printf 'could not read %s' "$first"
   else
