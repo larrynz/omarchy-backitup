@@ -474,6 +474,32 @@ grep -q "env-hook-token" "$WORK/bash-argv" 2>/dev/null
 check $? "and the pre_command's text never sits on bash's command line"
 jq '.destinations[0].pre_command = ""' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
 
+# The same privacy rule for the failure notification itself. The recorded
+# reason quotes a path restic could not read -- a file the user keeps private
+# -- and a notify-send process can live for days with its arguments
+# world-readable under /proc. A stub notify-send records what it was handed:
+# the reason's marker must not be among it, while the summary still names the
+# destination.
+OLD_ERR="$(jq -r '.destinations.test.last_run.error // ""' "$STATUS")"
+jq --arg e "could not read $WORK/private-notify-token/ledger and 2 more" \
+   '.destinations.test.last_run.error = $e' "$STATUS" > "$STATUS.n" && mv "$STATUS.n" "$STATUS"
+cat > "$WORK/stub/notify-send" <<STUB
+#!/usr/bin/bash
+printf '%s\0' "\$@" >> "\$NS_ARGV"
+exit 0
+STUB
+chmod +x "$WORK/stub/notify-send"
+rm -f "$WORK/ns-argv"
+NS_ARGV="$WORK/ns-argv" PATH="$WORK/stub:$PATH" OMARCHY_BACKITUP_QUIET= \
+  $CLI report-failure --dest test >/dev/null 2>&1
+grep -q "Backup failed" "$WORK/ns-argv" 2>/dev/null
+check $? "the failure notification names the destination"
+grep -q "private-notify-token" "$WORK/ns-argv" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and the recorded reason never reaches its command line"
+rm -f "$WORK/stub/notify-send"
+jq --arg e "$OLD_ERR" '.destinations.test.last_run.error = $e' "$STATUS" > "$STATUS.n" && mv "$STATUS.n" "$STATUS"
+
 # Later groups stub other commands in this same directory and run the CLI with
 # it on PATH; a leftover bash stub would sit in front of the real interpreter
 # for everything that follows.

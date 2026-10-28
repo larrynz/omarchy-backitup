@@ -626,9 +626,8 @@ prepare_destination() {
   cmd="$(dest '.pre_command // empty')"
   if [ -n "$cmd" ]; then
     # The command text stays out of the log and stderr alike: under --json the
-    # log line reaches stderr, require_destination captures it for die, and the
-    # log feeds the failure notification's detail line. The configuration file
-    # is the one place the text lives.
+    # log line reaches stderr and require_destination captures it for die. The
+    # configuration file is the one place the text lives.
     log_line "pre_command: running the configured command"
     PRE_COMMAND="$cmd" timeout "$PRE_COMMAND_TIMEOUT" bash -c 'eval "$PRE_COMMAND"' >&2
     status=$?
@@ -1864,7 +1863,8 @@ stream_backup() {
       error)
         # One line per file restic could not read. They are the whole reason a
         # run ends in exit 3, so they are kept rather than only logged: the
-        # caller counts them and names the first one in the notification.
+        # status record counts them and names the first one, and the panel
+        # reads that from a file only this account can open.
         # Deduplicated on write: restic can report the same path twice in one
         # run (once per scan pass), and a doubled line would make the
         # notification say "and 1 more" for a single path.
@@ -1897,9 +1897,10 @@ stream_backup() {
   return 0
 }
 
-# How many files restic skipped, and the first of them. The notification has
-# to say something you can act on, and a path is that; a count on its own only
-# tells you to go and open the log.
+# How many files restic skipped, and the first of them. This feeds the status
+# record the panel shows, which lives in a file only this account can read.
+# The failure notification stays generic on purpose: its body would sit on a
+# world-readable command line for as long as the notification lives.
 # Whether a path falls under an exclude pattern. The patterns are restic's:
 # one per line in the exclude file, glob syntax, matched against the full
 # path. bash's [[ == ]] covers them closely enough for the audit, which only
@@ -2128,7 +2129,7 @@ run_failure_command() {
 cmd_report_failure() {
   parse_options "$@"
   local name="$OPT_DEST"
-  local status run exit_code logfile detail label
+  local status run exit_code logfile label
   name="${name:-backup}"
 
   status="$(load_status)"
@@ -2137,11 +2138,11 @@ cmd_report_failure() {
   exit_code="$(jq -r '.exit_code // 1' <<<"$run" 2>/dev/null)"
   logfile="$(jq -r '.log_file // ""' <<<"$run" 2>/dev/null)"
 
-  # What went wrong, not where the log lives. A path is something you act on
-  # after you know the reason, and it does not fit on a notification anyway.
-  detail="$(jq -r '.error // ""' <<<"$run" 2>/dev/null)"
-  detail="${detail:-$(last_error_line "$logfile")}"
-  detail="${detail:-Click to open the log.}"
+  # The body stays static. The recorded reason can quote a path restic could
+  # not read, a file the user keeps private, and a notify-send process can
+  # live for days with its arguments world-readable under /proc. The panel
+  # and the log carry the reason in files only this account can read; the
+  # notification is the summons, and its click action is the way in.
 
   # The readable label needs the config, which may itself be why the run
   # failed. Fall back to the identifier rather than saying nothing.
@@ -2165,7 +2166,7 @@ cmd_report_failure() {
       action="$(timeout 86400 notify-send -u critical -t 0 \
         -i "$(icon_for icon)" \
         -A "default=Open log" \
-        -- "Backup failed: $label" "$detail" 2>/dev/null)"
+        -- "Backup failed: $label" "The reason is in the log." 2>/dev/null)"
       if [ "$action" = "default" ] && [ -n "$logfile" ]; then
         setsid omarchy-launch-editor "$logfile" >/dev/null 2>&1 &
       fi
