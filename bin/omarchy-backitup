@@ -131,16 +131,6 @@ die() {
 
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is not installed"; }
 
-# Every notification goes through here, so one variable can silence the lot.
-# The test suite sets it: a run of the suite was firing real sticky
-# notifications onto a real desktop, which somebody then had to dismiss by
-# hand. Tests get to touch a throwaway directory, not your screen.
-notify() {
-  [ -n "${OMARCHY_BACKITUP_QUIET:-}" ] && return 0
-  notify-send "$@" >/dev/null 2>&1
-  return 0
-}
-
 # ---------------------------------------------------------------------------
 # File safety
 #
@@ -1397,6 +1387,13 @@ cmd_log() {
 # backup
 # ---------------------------------------------------------------------------
 
+# A run that dies in a way no trap can catch -- a kill -- leaves its scratch
+# files behind. Sweep them here rather than only on the happy path, so they
+# cannot accumulate across months of nightly runs.
+sweep_stale_scratch_files() {
+  find "$STATE_DIR" -maxdepth 1 \( -name '.summary.*' -o -name '.includes.*' \) -type f -mmin +60 -delete 2>/dev/null
+}
+
 cmd_backup() {
   demo_on && { printf 'Demo mode is on; refusing to run a real backup.\n' >&2; return 0; }
   parse_options "$@"
@@ -1413,9 +1410,9 @@ cmd_backup() {
   started_epoch="$(date +%s)"
 
   # A run that dies before its cleanup -- a config error, a kill -- leaves its
-  # scratch file behind. Sweep them here rather than only on the happy path,
-  # so they cannot accumulate across months of nightly runs.
-  find "$STATE_DIR" -maxdepth 1 -name '.summary.*' -type f -mmin +60 -delete 2>/dev/null
+  # scratch file behind. Sweep them rather than only on the happy path, so
+  # they cannot accumulate across months of nightly runs.
+  sweep_stale_scratch_files
 
   # Global, not local: the EXIT trap runs after this function's scope is gone,
   # where a local would be unset -- and under `set -u` that is a hard error on
@@ -1703,6 +1700,10 @@ cmd_audit() {
   load_config
   select_destination "$OPT_DEST"
   restic_context
+  # The audit keeps its working files in the state directory, and the audit
+  # can be the first command a user runs -- so the directory is created here
+  # rather than assumed.
+  private_dir "$STATE_DIR" logs
   audit_run 0
 }
 
@@ -1718,7 +1719,8 @@ audit_run() {
   # line got there first.
   (
     local snapshot snapshot_id snapshot_time src u_first
-    local src_list snap_list missing unreadable_list filtered_list snap_excluded audit_file="$STATE_DIR/audit-$DEST_NAME.txt"
+    local src_list snap_list missing unreadable_list filtered_list snap_excluded roots_file
+    local audit_file="$STATE_DIR/audit-$DEST_NAME.txt"
     local n_unreadable=0 n_gone=0 n_other=0
 
     if ! src_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
@@ -1727,7 +1729,8 @@ audit_run() {
     if ! unreadable_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
     if ! filtered_list="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
     if ! snap_excluded="$(mktemp -- "$STATE_DIR/.audit.XXXXXX")"; then exit 1; fi
-    trap 'rm -f -- "$src_list" "$snap_list" "$missing" "$unreadable_list" "$filtered_list" "$snap_excluded"' EXIT
+    if ! roots_file="$(mktemp -- "$STATE_DIR/.audit-roots.XXXXXX")"; then exit 1; fi
+    trap 'rm -f -- "$src_list" "$snap_list" "$missing" "$unreadable_list" "$filtered_list" "$snap_excluded" "$roots_file"' EXIT
 
     # What the latest snapshot holds. No snapshot yet: nothing to compare,
     # and the audit says so rather than reporting empty counts as a bill of
@@ -1742,6 +1745,19 @@ audit_run() {
     fi
     snapshot_id="$(jq -r '.short_id // .id // ""' <<<"$snapshot")"
     snapshot_time="$(jq -r '.time // ""' <<<"$snapshot")"
+
+    # find's -files0-from arrived in findutils 4.9 (2021), and Omarchy ships
+    # Arch's findutils, which has it. On an older find the walk would have
+    # to put the source folder back on find's command line, so the audit
+    # says it cannot run rather than leaking the path to every local
+    # account for the length of the walk.
+    if ! find -P -files0-from /dev/null -maxdepth 0 >/dev/null 2>&1; then
+      printf 'Backup audit for %s\nThe find on this system cannot take its starting points from a file, so the audit will not run.\n' "$DEST_NAME" > "$audit_file"
+      if [ "$quiet" != "1" ]; then
+        cat -- "$audit_file"
+      fi
+      exit 0
+    fi
 
     # The two inventories, both lines of "f /path" or "d /path" so the diff
     # compares like with like. The source side: everything the user can read.
@@ -1759,9 +1775,17 @@ audit_run() {
       if [ -z "$src" ]; then continue; fi
       src="$(expand_tilde "$src")"
       [ -e "$src" ] || continue
-      find "$src" \( -type f -o -type d \) -readable -printf '%y %p\n' 2>/dev/null >> "$src_list"
-      find "$src" \( -type f -o -type d \) \! -readable -printf '%p\n' 2>/dev/null >> "$unreadable_list"
+      # The roots go into a file, not onto find's command line. find takes
+      # its starting points as arguments, and an argument is world-readable
+      # under /proc for as long as the call lasts -- and this walk can run
+      # for minutes over a large tree. -files0-from reads the same starting
+      # points from a file instead, so the source folder stays out of /proc.
+      printf '%s\0' "$src" >> "$roots_file"
     done
+    if [ -s "$roots_file" ]; then
+      find -P -files0-from "$roots_file" \( -type f -o -type d \) -readable -printf '%y %p\n' 2>/dev/null >> "$src_list"
+      find -P -files0-from "$roots_file" \( -type f -o -type d \) \! -readable -printf '%p\n' 2>/dev/null >> "$unreadable_list"
+    fi
     restic_run ls "$snapshot_id" --json 2>/dev/null \
       | jq -r 'select(.struct_type == "node") | (if .type == "dir" then "d" else "f" end) + " " + .path' 2>/dev/null \
       >> "$snap_list" || true
@@ -2305,16 +2329,33 @@ cmd_restore() {
   fi
   if ! mkdir -p -- "$target"; then die "could not create $target"; fi
 
+  # The state directory holds the include file, and it has to exist before
+  # mktemp can write into it. A restore can be the first command a user
+  # runs, so the directory is created here rather than assumed.
+  private_dir "$STATE_DIR" logs
+
   # restic takes --include once per path, so a queue of ticked files is still
   # a single restore: one repository unlock, one progress stream, one target.
   # The paths go into a per-run file the trap removes, not onto the command
   # line: --include-file reads the same patterns --include does, one per line.
-  local includes_file
-  includes_file="$(mktemp -- "$STATE_DIR/.includes.XXXXXX")" || die "could not create a temporary file"
-  chmod 600 -- "$includes_file"
-  for p in "${paths[@]}"; do printf '%s\n' "$p" >> "$includes_file"; done
+  sweep_stale_scratch_files
+  #
+  # Global, not local: the EXIT trap runs after this function's scope is
+  # gone, where a local would be unset -- and under `set -u` that is a hard
+  # error on every restore.
+  if ! INCLUDES_FILE="$(mktemp -- "$STATE_DIR/.includes.XXXXXX")"; then
+    die "could not create a temporary file"
+  fi
+  chmod 600 -- "$INCLUDES_FILE"
+  for p in "${paths[@]}"; do printf '%s\n' "$p" >> "$INCLUDES_FILE"; done
+  # A restore can end before the cleanup below reaches it: the destination
+  # check can refuse, and a restore copying gigabytes can be interrupted.
+  # The list of ticked paths goes away with the command whichever way it
+  # ends. The signal traps exit, which runs the EXIT trap.
+  trap 'rm -f -- "${INCLUDES_FILE:-}"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
-  private_dir "$STATE_DIR" logs
   progress_init restore
   progress_write running pre 1
   local prep_err=""
@@ -2326,10 +2367,10 @@ cmd_restore() {
   fi
   progress_write running restore 1
 
-  restic_run restore --json --include-file "$includes_file" --target "$target" -- "$OPT_SNAPSHOT" 2>/dev/null |
+  restic_run restore --json --include-file "$INCLUDES_FILE" --target "$target" -- "$OPT_SNAPSHOT" 2>/dev/null |
     stream_restore
   restore_exit="$(number_or "${PIPESTATUS[0]}" 1)"
-  rm -f -- "$includes_file"
+  rm -f -- "$INCLUDES_FILE"
 
   progress_write "$([ "$restore_exit" = "0" ] && echo done || echo failed)" restore 1 \
     "$(BACKITUP_RESTORE_TARGET="$target" jq -nc '{percent:1.0, target:$ENV.BACKITUP_RESTORE_TARGET}')"

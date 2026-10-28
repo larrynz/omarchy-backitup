@@ -987,6 +987,45 @@ rm -f "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup@argv-test.service"
 rm -rf "$WORK/argv-repo"
 
 rm -rf "$WORK/stub-restic"
+
+# The audit walks the source tree to compare it with what the snapshot
+# holds. find takes its starting points as arguments, and an argument is
+# world-readable under /proc for as long as the call lasts -- and this walk
+# can run for minutes over a large tree. A wrapper records every find
+# command line; the source folder must appear in none of them.
+mkdir -p "$WORK/stub-find"
+REAL_FIND="$(command -v find)"
+cat > "$WORK/stub-find/find" <<STUB
+#!/usr/bin/bash
+printf '%s\n' "\$@" >> "\${FIND_ARGV_LOG:-/dev/null}"
+exec "$REAL_FIND" "\$@"
+STUB
+chmod +x "$WORK/stub-find/find"
+
+rm -f "$WORK/find-argv"
+FIND_ARGV_LOG="$WORK/find-argv" PATH="$WORK/stub-find:$PATH" \
+  $CLI audit --dest test >/dev/null 2>&1
+[ -s "$WORK/find-argv" ]
+check $? "the audit walks the source tree with find"
+grep -q -- "$WORK/src" "$WORK/find-argv"
+[ $? -ne 0 ]
+check $? "and the source folder never sits on find's command line"
+grep -q -- "-files0-from" "$WORK/find-argv"
+check $? "the walk takes its starting points from a file"
+rm -rf "$WORK/stub-find"
+
+# A restore that cannot reach its destination gives up early. The list of
+# ticked paths it wrote must go with it, whichever way the command ends.
+jq --arg repo "$WORK/repo" \
+  '.destinations += [{name:"broken", repository:$repo, schedule:"*-*-* 03:00:00", pre_command:"exit 7"}]' \
+  "$CONFIG" > "$WORK/config.broken" && mv "$WORK/config.broken" "$CONFIG"
+printf 'test-password\n' | $CLI key set --dest broken >/dev/null 2>&1
+BACKITUP_RESTORE_PATHS="$WORK/src/docs/report.md" \
+  $CLI restore --dest broken --snapshot 12345678 --target "$WORK/restore-target" >/dev/null 2>&1
+ls -1 "$XDG_STATE_HOME/omarchy-backitup"/.includes.* >/dev/null 2>&1
+[ $? -ne 0 ]
+check $? "a restore that gives up early leaves no include file behind"
+rm -f "$XDG_CONFIG_HOME/omarchy-backitup/broken.key"
 cp "$WORK/config.bak" "$CONFIG"
 
 # --- progress metadata -----------------------------------------------------
