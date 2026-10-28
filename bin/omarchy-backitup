@@ -1341,7 +1341,11 @@ cmd_snapshots() {
 cmd_ls() {
   JSON_MODE=1
   parse_options "$@"
-  local path="$OPT_PATH"
+  # The panel passes the browsed path through the environment: the CLI's own
+  # command line is world-readable under /proc for as long as the listing
+  # runs, and the path can sit inside a directory the user keeps private.
+  # --path still works for a human at a shell.
+  local path="${OPT_PATH:-${BACKITUP_LS_PATH:-}}"
   path="${path:-/}"
   demo_on && { demo_ls_json "$path"; return 0; }
   validate_snapshot_id "$OPT_SNAPSHOT"
@@ -1413,8 +1417,10 @@ cmd_backup() {
   fi
   ERROR_FILE="$SUMMARY_FILE.reason"
   UNREADABLE_FILE="$SUMMARY_FILE.unreadable"
+  SOURCES_FILE="$SUMMARY_FILE.sources"
+  EXCLUDES_FILE="$SUMMARY_FILE.excludes"
   chmod 600 -- "$SUMMARY_FILE"
-  trap 'rm -f -- "${SUMMARY_FILE:-}" "${ERROR_FILE:-}" "${UNREADABLE_FILE:-}"' EXIT
+  trap 'rm -f -- "${SUMMARY_FILE:-}" "${ERROR_FILE:-}" "${UNREADABLE_FILE:-}" "${SOURCES_FILE:-}" "${EXCLUDES_FILE:-}"' EXIT
 
   restic_context
 
@@ -1425,6 +1431,7 @@ cmd_backup() {
   sources=()
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
+    case "$entry" in *$'\n'*) die "source paths must not contain newlines" ;; esac
     sources+=("$(expand_tilde "$entry")")
   done < <(cfg 'if (.source | type) == "array" then .source[] else (.source // empty) end' 2>/dev/null)
   if [ "${#sources[@]}" -eq 0 ]; then sources=("$HOME"); fi
@@ -1529,22 +1536,37 @@ cmd_backup() {
     exclude_file="$CONFIG_DIR/excludes.txt"
   fi
   [ -n "$exclude_file" ] && backup_args+=(--exclude-file "$exclude_file")
+  # Per-pattern excludes and the source paths travel in per-run files under the
+  # state directory, not on restic's command line: a backup runs for minutes
+  # with its arguments world-readable under /proc, and both the patterns and
+  # the sources can name directories the user keeps private. --exclude-file
+  # takes the same patterns --exclude does, and --files-from-verbatim reads
+  # each line as a literal path, so neither the semantics nor the ordering
+  # change. The files are created with the rest of the run's temporaries and
+  # removed by the same trap.
+  : > "$EXCLUDES_FILE"
   while IFS= read -r pattern; do
-    [ -n "$pattern" ] && backup_args+=(--exclude "$pattern")
+    case "$pattern" in *$'\n'*) die "exclude patterns must not contain newlines" ;; esac
+    [ -n "$pattern" ] && printf '%s\n' "$pattern" >> "$EXCLUDES_FILE"
   done < <(cfg '.excludes[]? // empty' 2>/dev/null)
   [ "$(cfg '.one_file_system // true')" = "true" ] && backup_args+=(--one-file-system)
   [ "$(cfg '.skip_if_unchanged // true')" = "true" ] && backup_args+=(--skip-if-unchanged)
   [ "$OPT_DRY_RUN" = "1" ] && backup_args+=(--dry-run)
-  # The system snapshot copy's root-owned files are excluded by name, before
-  # the paths: everything after -- is a path, and a --exclude there would be
-  # read as one.
+  # The system snapshot copy's root-owned files are excluded by name. They go
+  # into the same per-run file: a --exclude after -- would be read as a path
+  # anyway, and the file keeps the names off the command line too.
   while IFS= read -r p; do
-    [ -n "$p" ] && backup_args+=(--exclude "$p")
+    [ -n "$p" ] && printf '%s\n' "$p" >> "$EXCLUDES_FILE"
   done <<< "$SYS_SNAP_COPY_UNREADABLE"
+  [ -s "$EXCLUDES_FILE" ] && backup_args+=(--exclude-file "$EXCLUDES_FILE")
   # The copy joins the run's sources: the backup holds the system's
   # installed state, and deleting the backup removes the copy.
-  [ -n "$SYS_SNAP_COPY" ] && backup_args+=("$SYS_SNAP_COPY")
-  backup_args+=(-- "${sources[@]}")
+  : > "$SOURCES_FILE"
+  for entry in "${sources[@]}"; do
+    printf '%s\n' "$entry" >> "$SOURCES_FILE"
+  done
+  [ -n "$SYS_SNAP_COPY" ] && printf '%s\n' "$SYS_SNAP_COPY" >> "$SOURCES_FILE"
+  backup_args+=(--files-from-verbatim "$SOURCES_FILE")
 
   progress_write running backup 1
 
@@ -2238,11 +2260,20 @@ cmd_restore() {
 
   # One path is the common case and the one the tests pin; several come from
   # ticking files in the browser. OPT_PATH is kept in step so a caller that
-  # passes one path behaves exactly as before.
+  # passes one path behaves exactly as before. The panel passes the paths
+  # through the environment instead of arguments: a restore runs for minutes
+  # with its command line world-readable under /proc, and the paths can name
+  # files the user keeps private. --path still works for a human at a shell.
   local -a paths=()
-  if [ "${#OPT_PATHS[@]}" -gt 0 ]; then paths=("${OPT_PATHS[@]}"); else paths=("$OPT_PATH"); fi
+  if [ "${#OPT_PATHS[@]}" -gt 0 ]; then paths=("${OPT_PATHS[@]}")
+  elif [ -n "${BACKITUP_RESTORE_PATHS:-}" ]; then
+    while IFS= read -r p; do [ -n "$p" ] && paths+=("$p"); done <<<"$BACKITUP_RESTORE_PATHS"
+  else paths=("$OPT_PATH"); fi
   local p
-  for p in "${paths[@]}"; do validate_absolute_path "$p"; done
+  for p in "${paths[@]}"; do
+    validate_absolute_path "$p"
+    case "$p" in *$'\n'*) die "restore paths must not contain newlines" ;; esac
+  done
 
   load_config
   select_destination "$OPT_DEST"
@@ -2264,8 +2295,12 @@ cmd_restore() {
 
   # restic takes --include once per path, so a queue of ticked files is still
   # a single restore: one repository unlock, one progress stream, one target.
-  local -a includes=()
-  for p in "${paths[@]}"; do includes+=(--include "$p"); done
+  # The paths go into a per-run file the trap removes, not onto the command
+  # line: --include-file reads the same patterns --include does, one per line.
+  local includes_file
+  includes_file="$(mktemp -- "$STATE_DIR/.includes.XXXXXX")" || die "could not create a temporary file"
+  chmod 600 -- "$includes_file"
+  for p in "${paths[@]}"; do printf '%s\n' "$p" >> "$includes_file"; done
 
   private_dir "$STATE_DIR" logs
   progress_init restore
@@ -2279,9 +2314,10 @@ cmd_restore() {
   fi
   progress_write running restore 1
 
-  restic_run restore --json "${includes[@]}" --target "$target" -- "$OPT_SNAPSHOT" 2>/dev/null |
+  restic_run restore --json --include-file "$includes_file" --target "$target" -- "$OPT_SNAPSHOT" 2>/dev/null |
     stream_restore
   restore_exit="$(number_or "${PIPESTATUS[0]}" 1)"
+  rm -f -- "$includes_file"
 
   progress_write "$([ "$restore_exit" = "0" ] && echo done || echo failed)" restore 1 \
     "$(jq -nc --arg t "$target" '{percent:1.0, target:$t}')"

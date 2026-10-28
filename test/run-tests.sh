@@ -837,6 +837,94 @@ rm -rf "$WORK/stub-restic"
 cp "$WORK/config.bak" "$CONFIG"
 [ -f "$WORK/status.bak" ] && cp "$WORK/status.bak" "$STATUS"
 
+# --- command lines ---------------------------------------------------------
+#
+# A backup and a restore run for minutes with their /proc entries world-
+# readable to every local account. Whatever the plugin places there can name
+# a directory the user keeps private, so sources and exclude patterns travel
+# in per-run files, restore includes in one too, and the panel hands the CLI
+# its paths through the environment. A stub restic records both what it was
+# handed and what its parent's command line looked like; the private paths
+# must appear in neither.
+group "Command lines"
+
+mkdir -p "$WORK/stub-restic"
+cat > "$WORK/stub-restic/restic" <<'STUB'
+#!/usr/bin/bash
+printf '%s\0' "$@" >> "$RESTIC_ARGV"
+tr '\0' '\n' < "/proc/$PPID/cmdline" > "$RESTIC_PARENT" 2>/dev/null
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --files-from-verbatim|--exclude-file|--include-file)
+      [ -n "${2:-}" ] && cat -- "$2" >> "$RESTIC_FILES" ; shift 2 ;;
+    *) shift ;;
+  esac
+done
+exit 0
+STUB
+chmod +x "$WORK/stub-restic/restic"
+jq --arg s "$WORK/src" --arg x "*.cache" \
+   '.destinations[0].source = $s | .excludes = [$x]' \
+   "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+rm -f "$WORK/restic-argv" "$WORK/restic-files" "$WORK/cli-argv" "$WORK/cli-argv2" "$WORK/cli-argv3"
+RESTIC_ARGV="$WORK/restic-argv" RESTIC_FILES="$WORK/restic-files" RESTIC_PARENT="$WORK/cli-argv" \
+  PATH="$WORK/stub-restic:$PATH" $CLI backup --dest test >/dev/null 2>&1
+
+grep -q -- "--files-from-verbatim" "$WORK/restic-argv"
+check $? "restic reads the backup sources from a file"
+grep -q -- "$WORK/src" "$WORK/restic-argv"
+[ $? -ne 0 ]
+check $? "and the source path never sits on restic's command line"
+grep -q -- "*.cache" "$WORK/restic-argv"
+[ $? -ne 0 ]
+check $? "and neither do the exclude patterns"
+grep -qx -- "$WORK/src" "$WORK/restic-files"
+check $? "the sources file holds the configured source"
+grep -qx -- "*.cache" "$WORK/restic-files"
+check $? "and the excludes file holds the configured pattern"
+grep -q -- "$WORK/src" "$WORK/cli-argv"
+[ $? -ne 0 ]
+check $? "and not on the CLI's own command line either"
+
+rm -f "$WORK/restic-argv" "$WORK/restic-files"
+BACKITUP_RESTORE_PATHS="$WORK/src/docs/report.md" \
+  RESTIC_ARGV="$WORK/restic-argv" RESTIC_FILES="$WORK/restic-files" RESTIC_PARENT="$WORK/cli-argv2" \
+  PATH="$WORK/stub-restic:$PATH" $CLI restore --dest test --snapshot 12345678 >/dev/null 2>&1
+grep -q -- "--include-file" "$WORK/restic-argv"
+check $? "restic reads the restore paths from a file"
+grep -q -- "$WORK/src/docs/report.md" "$WORK/restic-argv"
+[ $? -ne 0 ]
+check $? "and the restore path never sits on restic's command line"
+grep -qx -- "$WORK/src/docs/report.md" "$WORK/restic-files"
+check $? "the include file holds the requested path"
+grep -q -- "$WORK/src/docs/report.md" "$WORK/cli-argv2"
+[ $? -ne 0 ]
+check $? "and the panel's env handoff keeps it off the CLI's own command line"
+
+# The same handoff for the restore browser: the browsed path arrives through
+# the environment, and a stub restic answers with a listing under it.
+cat > "$WORK/stub-restic/restic" <<'STUB'
+#!/usr/bin/bash
+printf '%s\0' "$@" >> "$RESTIC_ARGV"
+tr '\0' '\n' < "/proc/$PPID/cmdline" > "$RESTIC_PARENT" 2>/dev/null
+p="${@: -1}"
+printf '%s\n' '{"message_type":"ls","struct_type":"node","name":"docs","type":"dir","path":"'"$p"'/docs","size":0,"mtime":"2026-01-01T00:00:00Z"}'
+exit 0
+STUB
+chmod +x "$WORK/stub-restic/restic"
+rm -f "$WORK/restic-argv"
+BACKITUP_LS_PATH="$WORK/src" RESTIC_ARGV="$WORK/restic-argv" RESTIC_PARENT="$WORK/cli-argv3" \
+  PATH="$WORK/stub-restic:$PATH" $CLI ls --dest test --snapshot 12345678 --json > "$WORK/ls-out.json" 2>/dev/null
+jq -e --arg p "$WORK/src" '.ok == true and .path == $p and .entries[0].name == "docs"' \
+  "$WORK/ls-out.json" >/dev/null 2>&1
+check $? "ls reads the browsed path from the environment"
+grep -q -- "$WORK/src" "$WORK/cli-argv3"
+[ $? -ne 0 ]
+check $? "and keeps it off the CLI's own command line"
+
+rm -rf "$WORK/stub-restic"
+cp "$WORK/config.bak" "$CONFIG"
+
 # --- saving the key to 1Password -------------------------------------------
 #
 # Stubbed, because a test suite has no business touching somebody's vault. What

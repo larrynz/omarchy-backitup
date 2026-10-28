@@ -751,8 +751,12 @@ Singleton {
     entries = []
     listTruncated = false
     listBusy = true
+    // The browsed path travels in an environment variable, never on a
+    // command line: the CLI's own /proc entry is world-readable for as long
+    // as the listing runs, and the path can sit inside a private directory.
+    lsProc.environment = ({ BACKITUP_LS_PATH: String(path) })
     lsProc.command = [root.cli, "ls", "--dest", String(d.name),
-                      "--snapshot", snapshot, "--path", path, "--json"]
+                      "--snapshot", snapshot, "--json"]
     lsProc.running = true
   }
 
@@ -824,8 +828,10 @@ Singleton {
 
     var command = [root.cli, "restore", "--dest", String(d.name),
                    "--snapshot", String(snapshot)]
-    for (var i = 0; i < list.length; i++)
-      command.push("--path", String(list[i]))
+    // The paths travel in an environment variable, never on a command line:
+    // a restore runs for minutes with its /proc entry world-readable, and
+    // the paths can name files the user keeps private.
+    restoreProc.environment = ({ BACKITUP_RESTORE_PATHS: list.join("\n") })
     restoreProc.command = command
     restoreProc.running = true
   }
