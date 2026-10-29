@@ -6,3 +6,14 @@
 # The pre-push hook (work/git-hooks/pre-push) enforces the push side.
 *audit*
 *security*
+
+# The September security review's write-ups and patch scripts: these were
+# once pushed by accident and have been scrubbed from the history. They stay
+# local from now on; the pre-push hook names them too, so a stale index or
+# an amended commit cannot bring them back.
+task-state-*
+issue-draft.md
+pr-draft.md
+patch-tm*.py
+case-test*.sh
+min-test.sh
