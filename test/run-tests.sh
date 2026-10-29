@@ -654,6 +654,27 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   check $? "systemd accepts the generated service"
 fi
 
+# The journal is a second, durable copy of the backup's output that this
+# project does not control, and that output names the files restic worked on.
+# The service must not write it there; the panel's 0600 log is the copy.
+grep -q '^StandardOutput=null$' "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup@.service" &&
+  grep -q '^StandardError=null$' "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup@.service"
+check $? "the backup service keeps its output out of the journal"
+grep -q '^StandardOutput=null$' "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup-config.service"
+check $? "and so does the unit that runs install after a config change"
+
+# The unit files are not secret, but a planted symlink must not be able to
+# redirect the write to a file of the attacker's choosing.
+echo "MUST SURVIVE" > "$WORK/unit-victim"
+UNIT_FILE="$XDG_CONFIG_HOME/systemd/user/omarchy-backitup@.service"
+rm -f "$UNIT_FILE"
+ln -s "$WORK/unit-victim" "$UNIT_FILE"
+$CLI install >/dev/null 2>&1
+[ "$(cat "$WORK/unit-victim")" = "MUST SURVIVE" ]
+check $? "a symlink planted on a unit file cannot redirect the write"
+[ ! -L "$UNIT_FILE" ]
+check $? "and the planted symlink becomes a real unit file"
+
 # A pre_command that starts a systemd unit which does not exist fails every
 # run. install catches that before anything is written -- the refusal has to
 # name the unit and leave nothing half-installed.
@@ -909,6 +930,9 @@ check $? "restic reads the restore paths from a file"
 grep -q -- "$WORK/src/docs/report.md" "$WORK/restic-argv"
 [ $? -ne 0 ]
 check $? "and the restore path never sits on restic's command line"
+grep -q -- "$WORK/restore-target" "$WORK/restic-argv"
+[ $? -ne 0 ]
+check $? "and the restore target never sits on restic's command line either"
 grep -qx -- "$WORK/src/docs/report.md" "$WORK/restic-files"
 check $? "the include file holds the requested path"
 grep -q -- "$WORK/src/docs/report.md" "$WORK/cli-argv2"
@@ -927,11 +951,18 @@ check $? "and the panel still receives where the restored file landed"
 cat > "$WORK/stub/notify-send" <<STUB
 #!/usr/bin/bash
 printf '%s\0' "\$@" >> "\$NS_ARGV"
+env > "\$NS_ENV" 2>/dev/null
 exit 0
 STUB
 chmod +x "$WORK/stub/notify-send"
-rm -f "$WORK/ns-argv" "$WORK/restic-argv" "$WORK/restic-files"
-NS_ARGV="$WORK/ns-argv" OMARCHY_BACKITUP_QUIET= \
+# A restore loads the destination's secrets so restic can use them. They
+# belong to the restic call, not to the notification process that outlives
+# it -- before scoping, every child of the run inherited the whole .env.
+printf 'CLOUD_CANARY=do-not-leak\n' > "$WORK/restore-secrets.env"
+cp "$CONFIG" "$WORK/config.before-scope"
+jq --arg s "$WORK/restore-secrets.env" '.destinations[0].secrets_file = $s' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+rm -f "$WORK/ns-argv" "$WORK/ns-env" "$WORK/restic-argv" "$WORK/restic-files"
+NS_ARGV="$WORK/ns-argv" NS_ENV="$WORK/ns-env" OMARCHY_BACKITUP_QUIET= \
   BACKITUP_RESTORE_PATHS="$WORK/src/docs/report.md" \
   RESTIC_ARGV="$WORK/restic-argv" RESTIC_FILES="$WORK/restic-files" RESTIC_PARENT="$WORK/cli-argv2" \
   PATH="$WORK/stub-bin:$WORK/stub:$WORK/stub-restic:$PATH" \
@@ -939,9 +970,13 @@ NS_ARGV="$WORK/ns-argv" OMARCHY_BACKITUP_QUIET= \
 sleep 0.3
 grep -q "Restore complete" "$WORK/ns-argv" 2>/dev/null
 check $? "the restore notification still appears"
+grep -q '^CLOUD_CANARY=' "$WORK/ns-env" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and a .env secret never reaches the notification process"
 grep -q -- "$WORK/restore-target" "$WORK/ns-argv" 2>/dev/null
 [ $? -ne 0 ]
 check $? "and the restore target never reaches its command line"
+cp "$WORK/config.before-scope" "$CONFIG"
 rm -f "$WORK/stub/notify-send"
 
 # The same handoff for the restore browser: the browsed path arrives through
@@ -1012,6 +1047,18 @@ grep -q -- "$WORK/src" "$WORK/find-argv"
 check $? "and the source folder never sits on find's command line"
 grep -q -- "-files0-from" "$WORK/find-argv"
 check $? "the walk takes its starting points from a file"
+
+# install's preflight walk has the same exposure, and it runs from the config
+# .path unit on every config change -- including the unreadable directory it
+# exists to name. It must take its roots from a file too.
+rm -f "$WORK/find-argv"
+FIND_ARGV_LOG="$WORK/find-argv" PATH="$WORK/stub-find:$PATH" \
+  $CLI install >/dev/null 2>&1
+grep -q -- "-files0-from" "$WORK/find-argv"
+check $? "install's unreadable-directory walk also reads its roots from a file"
+grep -q -- "$WORK/src" "$WORK/find-argv"
+[ $? -ne 0 ]
+check $? "and the source folder never sits on install's find command line"
 rm -rf "$WORK/stub-find"
 
 # A restore that cannot reach its destination gives up early. The list of
@@ -1047,9 +1094,9 @@ mkdir -p "$WORK/stub"
 cat > "$WORK/stub/restic" <<'STUB'
 #!/usr/bin/bash
 if [ "$1" = "backup" ]; then
-  sleep 0.6
+  sleep 1.1
   printf '{"message_type":"status","percent_done":0.5,"files_done":1,"total_files":2,"bytes_done":10,"total_bytes":20,"current_files":["%s"]}\n' "$MARKER_PATH"
-  sleep 0.6
+  sleep 1.1
   cp -- "$PROGRESS_FILE_SRC" "$PROGRESS_FILE_DST" 2>/dev/null
   printf '%s\n' '{"message_type":"summary","percent_done":1.0,"files_done":2,"total_files":2,"bytes_done":20,"total_bytes":20}'
 fi
@@ -1820,6 +1867,65 @@ check $? "init still creates a repository at a path that does not exist yet"
 
 timeout 10 $CLI snapshots --dest fresh --json 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1
 check $? "and the fresh repository reads back"
+
+# --- credential lint, reserved names, staging, hardening --------------------
+
+group "A credential inside a command is called out"
+
+cp "$XDG_CONFIG_HOME/omarchy-backitup/config.json" "$WORK/config.before-lint"
+LINT_CMD="printf 'Authorization: Bearer lint-token'"
+jq --arg c "$LINT_CMD" --arg r "$WORK/no-such-lint-repo" \
+   '.destinations = [.destinations[] | if .name == "test" then (. + {repository: $r, password_command: $c} | del(.password_file)) else . end]' \
+   "$XDG_CONFIG_HOME/omarchy-backitup/config.json" > "$WORK/config.lint"
+mv "$WORK/config.lint" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+ERR="$($CLI snapshots --dest test --json 2>&1 >/dev/null)"
+grep -qi 'credential' <<<"$ERR"
+check $? "a password_command that embeds a credential is called out"
+
+jq --arg c 'printf plain-password' --arg r "$WORK/no-such-lint-repo" \
+   '.destinations = [.destinations[] | if .name == "test" then (. + {repository: $r, password_command: $c} | del(.password_file)) else . end]' \
+   "$XDG_CONFIG_HOME/omarchy-backitup/config.json" > "$WORK/config.lint2"
+mv "$WORK/config.lint2" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+ERR="$($CLI snapshots --dest test --json 2>&1 >/dev/null)"
+grep -qi 'credential' <<<"$ERR"
+[ $? -ne 0 ]
+check $? "and a plain password command is left alone"
+mv "$WORK/config.before-lint" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+
+group "A secrets file cannot hijack the environment"
+
+cp "$XDG_CONFIG_HOME/omarchy-backitup/config.json" "$WORK/config.before-reserved"
+printf 'PATH=/tmp/evil\n' > "$WORK/reserved.env"
+jq --arg s "$WORK/reserved.env" \
+   '.destinations = [.destinations[] | if .name == "test" then . + {secrets_file: $s} else . end]' \
+   "$XDG_CONFIG_HOME/omarchy-backitup/config.json" > "$WORK/config.reserved"
+mv "$WORK/config.reserved" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+OUT="$($CLI snapshots --dest test --json 2>&1)"
+grep -q 'PATH' <<<"$OUT" && grep -qi 'manages' <<<"$OUT"
+check $? "a secrets file that sets PATH is refused, not applied"
+mv "$WORK/config.before-reserved" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+
+group "Config directory hardening"
+
+printf '{"old":true}\n' > "$XDG_CONFIG_HOME/omarchy-backitup/config.json.bak"
+chmod 644 "$XDG_CONFIG_HOME/omarchy-backitup/config.json.bak"
+printf 'test-password\n' | $CLI key set --dest test >/dev/null 2>&1
+[ "$(stat -c '%a' "$XDG_CONFIG_HOME/omarchy-backitup/config.json.bak")" = "600" ]
+check $? "a config backup is tightened to 0600 with the rest of the directory"
+rm -f "$XDG_CONFIG_HOME/omarchy-backitup/config.json.bak"
+
+group "QML setup staging"
+
+STORE_QML="${CLI%/bin/omarchy-backitup}/BackItUpStore.qml"
+grep -q 'applyTmpFile: applyDir ? applyDir + "/apply.json" : ""' "$STORE_QML"
+check $? "the staged setup document is derived from one directory property"
+grep -q 'noclobber' "$STORE_QML"
+check $? "and the writer refuses to follow a file already planted at its path"
+grep -q 'mkdir -p -m 700' "$STORE_QML"
+check $? "and creates that directory 0700"
+grep -q '"/tmp"' "$STORE_QML"
+[ $? -ne 0 ]
+check $? "and never stages under a world-writable /tmp"
 
 # --- result ----------------------------------------------------------------
 

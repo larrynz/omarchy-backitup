@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# Refuse to push any commit whose tree carries a security-review artifact.
+#
+# The audit write-ups under work/ are deliberately kept on this machine only.
+# work/.gitignore stops an accidental `git add`; this hook stops everything
+# else -- `git add -f`, a stale index, an amended commit, a force-push -- by
+# inspecting the tree that a push would actually publish.
+#
+# Install (once per clone):
+#   ln -sf ../../work/git-hooks/pre-push .git/hooks/pre-push
+#
+# Escape hatch, only when you are certain the matching file is safe to publish:
+#   BACKITUP_ALLOW_SECURITY_PUSH=1 git push
+#
+set -euo pipefail
+
+if [ "${BACKITUP_ALLOW_SECURITY_PUSH:-}" = "1" ]; then
+  exit 0
+fi
+
+# Files under work/ whose name mentions audit/security, plus any *security*.md
+# or *audit*.md anywhere. Case-insensitive.
+forbidden='(^|/)work/[^/]*(audit|security)|(^|/)[^/]*(audit|security)[^/]*\.(md|txt|pdf)$'
+
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_sha:-}" ] || continue
+  # All-zero sha means the ref is being deleted; nothing to inspect.
+  case "$local_sha" in
+    0000000000000000000000000000000000000000) continue ;;
+  esac
+
+  hits="$(git ls-tree -r --name-only "$local_sha" 2>/dev/null | grep -Ei "$forbidden" || true)"
+  if [ -n "$hits" ]; then
+    printf '\npre-push: refusing to push %s\n' "$local_ref" >&2
+    printf 'security-review artifacts are present in the tree:\n' >&2
+    printf '%s\n' "$hits" | sed 's/^/  /' >&2
+    printf 'These must stay local. Re-run with BACKITUP_ALLOW_SECURITY_PUSH=1 only if you are sure.\n\n' >&2
+    status=1
+  fi
+done
+
+exit "$status"

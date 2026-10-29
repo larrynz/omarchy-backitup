@@ -203,7 +203,7 @@ config_dir_secure() {
   chmod 700 -- "$CONFIG_DIR" 2>/dev/null
 
   shopt -s nullglob
-  for entry in "$CONFIG_DIR"/*.key "$CONFIG_DIR"/*.env "$CONFIG_DIR"/config.json; do
+  for entry in "$CONFIG_DIR"/*.key "$CONFIG_DIR"/*.env "$CONFIG_DIR"/*.bak "$CONFIG_DIR"/config.json; do
     [ -f "$entry" ] && [ ! -L "$entry" ] && chmod 600 -- "$entry" 2>/dev/null
   done
   shopt -u nullglob
@@ -425,6 +425,15 @@ load_secrets() {
     value="$(trim "$value")"
 
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "$path:$lineno has an invalid variable name \"$key\""
+    # Names the plugin manages, and the classic environment hooks a shell
+    # sources before it runs anything. A secrets file that could set
+    # RESTIC_PASSWORD_FILE would silently override the password the user
+    # chose; one that could set BASH_ENV or LD_PRELOAD would run code in
+    # every command the plugin starts. Refuse rather than repair.
+    case "$key" in
+      PATH|HOME|SHELL|BASH_ENV|ENV|IFS|LD_PRELOAD|LD_LIBRARY_PATH|RESTIC_REPOSITORY|RESTIC_PASSWORD_FILE|RESTIC_PASSWORD_COMMAND)
+        die "$path:$lineno sets $key, which the plugin manages; remove it from the secrets file" ;;
+    esac
 
     if [ "${#value}" -ge 2 ]; then
       case "$value" in
@@ -493,23 +502,50 @@ sanitize_repository() {
     s#^([a-z0-9+.-]+:)([^:/]*):[^/]*@#\1\2@#'
 }
 
-# Exports everything restic needs. Values go into the environment, never into
+# A command about to be run by a child: restic runs password_command itself,
+# and pre_command / on_failure_command go through a shell. Carrying the text in
+# the environment keeps it off this plugin's own command lines -- but the child
+# that finally runs it prints its own words, and those are world-readable under
+# /proc for as long as the child lives. A credential written into the command
+# (a bearer token in a curl header, a --token flag) is therefore exposed no
+# matter what this plugin does; the only real fix is to stop writing the
+# credential into the command. This recognises the common shapes and says so,
+# so the exposure is a choice rather than a surprise.
+command_may_leak_secret() {
+  local cmd="$1"
+  case "$cmd" in
+    *Authorization:*|*Bearer*|*--token*|*--password*|*--api-key*|*--apikey*) return 0 ;;
+    *password=*|*token=*|*secret=*|*api_key=*|*apikey=*|*access_key*) return 0 ;;
+    *://*:*@*) return 0 ;;
+  esac
+  printf '%s' "$cmd" | grep -Eq '(^|[^A-Za-z0-9_-])[A-Za-z0-9_-]{32,}([^A-Za-z0-9_-]|$)' && return 0
+  return 1
+}
+
+warn_command_secret() {
+  local label="$1" cmd="$2"
+  command_may_leak_secret "$cmd" || return 0
+  log_line "Warning: the $label appears to carry a credential in its own text, which is readable under /proc while the command runs. Put the secret in a file or an environment variable the command reads, rather than in the command itself."
+  return 0
+}
+
+# Values go into the environment of the one command that needs them, never into
 # argv: /proc/<pid>/cmdline is readable by every local account, environ is not.
 REPO_DISPLAY=""
 
 restic_context() {
-  local repository password_file password_command key
+  local repository password_file password_command
 
+  # The .env values stay in this shell; with_secrets exports them to restic and
+  # to a pre_command, not to every unrelated child of the run.
   load_secrets
-  for key in "${!SECRETS[@]}"; do
-    export "$key=${SECRETS[$key]}"
-  done
 
   repository="$(dest '.repository // empty')"
   [ -n "$repository" ] || die "destination $DEST_NAME has no repository URL"
   substitute_vars "$repository" 1
-  export RESTIC_REPOSITORY="$SUBST_RESULT"
+  RESTIC_REPOSITORY="$SUBST_RESULT"
   REPO_DISPLAY="$(sanitize_repository "$SUBST_RESULT")"
+  unset RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND
 
   password_file="$(expand_tilde "$(dest '.password_file // empty')")"
   password_command="$(dest '.password_command // empty')"
@@ -524,8 +560,8 @@ restic_context() {
     # header, say), and --password-command would put it in restic's argv,
     # where every local account can read it. restic takes the same value
     # from RESTIC_PASSWORD_COMMAND in the environment instead.
-    unset RESTIC_PASSWORD_FILE
-    export RESTIC_PASSWORD_COMMAND="$password_command"
+    warn_command_secret "password_command of $DEST_NAME" "$password_command"
+    RESTIC_PASSWORD_COMMAND="$password_command"
     return 0
   fi
 
@@ -533,8 +569,7 @@ restic_context() {
   user_file "$password_file" ||
     die "no key file at $password_file, run: omarchy-backitup key set --dest $DEST_NAME, or set password_command in the config if the destination fetches its own password"
   chmod 600 -- "$password_file" 2>/dev/null
-  unset RESTIC_PASSWORD_COMMAND
-  export RESTIC_PASSWORD_FILE="$password_file"
+  RESTIC_PASSWORD_FILE="$password_file"
   return 0
 }
 
@@ -553,7 +588,30 @@ over_byte_cap() {
   [ "$(printf '%s' "$1" | wc -c)" -gt "$2" ]
 }
 
-restic_run() { restic "$@"; }
+# Runs one command with the destination's credentials in its environment, and
+# only that command's. restic reads its backend credentials (S3 keys, B2, ...)
+# from the environment, so the destination's .env values do have to be present
+# for the restic call and for a pre_command that may need them; everything else
+# -- notify-send, an editor, a file manager -- runs without them. environ is
+# owner-only, but there is no reason to hand a credential to a process that has
+# no use for it. A variable prefixed onto this function (PRE_COMMAND,
+# ON_FAILURE_COMMAND) is already exported into the subshell and reaches "$@".
+with_secrets() {
+  (
+    local k
+    [ -n "${RESTIC_REPOSITORY:-}" ] && export RESTIC_REPOSITORY
+    [ -n "${RESTIC_PASSWORD_FILE:-}" ] && export RESTIC_PASSWORD_FILE
+    [ -n "${RESTIC_PASSWORD_COMMAND:-}" ] && export RESTIC_PASSWORD_COMMAND
+    # "${!SECRETS[@]}", not a "${!SECRETS[@]+...}" guard: the + form parses as
+    # an indirect expansion of the alternate value and hands the loop the
+    # values instead of the names. bash 4.4+ expands an empty name array
+    # safely under `set -u`, which is what the guard was for.
+    for k in "${!SECRETS[@]}"; do export "$k=${SECRETS[$k]}"; done
+    "$@"
+  )
+}
+
+restic_run() { with_secrets restic "$@"; }
 
 # pre_command lives in the user's own configuration, so a shell string is as
 # legitimate here as restic's own --password-command -- and it may embed a
@@ -600,7 +658,7 @@ repository_reachable() {
     fi
     if [ "$status" = "0" ]; then return 0; fi
   fi
-  printf 'the repository at %s is not reachable -- the destination may be unplugged or not mounted\n' "$RESTIC_REPOSITORY" >&2
+  printf 'the repository at %s is not reachable -- the destination may be unplugged or not mounted\n' "$(sanitize_repository "$RESTIC_REPOSITORY")" >&2
   return 1
 }
 
@@ -619,7 +677,7 @@ prepare_destination() {
     # log line reaches stderr and require_destination captures it for die. The
     # configuration file is the one place the text lives.
     log_line "pre_command: running the configured command"
-    PRE_COMMAND="$cmd" timeout "$PRE_COMMAND_TIMEOUT" bash -c 'eval "$PRE_COMMAND"' >&2
+    PRE_COMMAND="$cmd" with_secrets timeout "$PRE_COMMAND_TIMEOUT" bash -c 'eval "$PRE_COMMAND"' >&2
     status=$?
     if [ "$status" != "0" ]; then
       [ "$status" = "124" ] && printf 'pre_command of %s timed out (>%ss)\n' "$DEST_NAME" "$PRE_COMMAND_TIMEOUT" >&2
@@ -1035,7 +1093,7 @@ cmd_key() {
       # never says where the password lives -- you have to know the rule. After
       # this the file states it, and nothing is implicit any more.
       if [ -z "$(dest '.password_file // empty')" ]; then
-        cp -- "$CONFIG_FILE" "$CONFIG_FILE.bak" 2>/dev/null || true
+        write_private "$CONFIG_FILE.bak" < "$CONFIG_FILE" 2>/dev/null || true
         jq --arg n "$DEST_NAME" --arg p "$path" \
           '(.destinations[] | select(.name == $n) | .password_file) = $p' <<<"$CONFIG_JSON" \
           | write_private "$CONFIG_FILE" || die "could not record password_file in $CONFIG_FILE"
@@ -1391,7 +1449,7 @@ cmd_log() {
 # files behind. Sweep them here rather than only on the happy path, so they
 # cannot accumulate across months of nightly runs.
 sweep_stale_scratch_files() {
-  find "$STATE_DIR" -maxdepth 1 \( -name '.summary.*' -o -name '.includes.*' \) -type f -mmin +60 -delete 2>/dev/null
+  find "$STATE_DIR" -maxdepth 1 \( -name '.summary.*' -o -name '.includes.*' -o -name '.install-roots.*' \) -type f -mmin +60 -delete 2>/dev/null
 }
 
 cmd_backup() {
@@ -2176,7 +2234,7 @@ run_failure_command() {
   if [ -z "$cmd" ]; then return 0; fi
 
   ON_FAILURE_COMMAND="$cmd" DESTINATION="$DEST_NAME" EXIT_CODE="$exit_code" LOG_FILE="$logfile" \
-    setsid bash -c 'eval "$ON_FAILURE_COMMAND"' >/dev/null 2>&1 &
+    with_secrets setsid bash -c 'eval "$ON_FAILURE_COMMAND"' >/dev/null 2>&1 &
   return 0
 }
 
@@ -2346,6 +2404,9 @@ cmd_restore() {
   if ! INCLUDES_FILE="$(mktemp -- "$STATE_DIR/.includes.XXXXXX")"; then
     die "could not create a temporary file"
   fi
+  # Absolute, because the restic call below runs from the target's parent: a
+  # relative --include-file would be resolved against the wrong directory.
+  INCLUDES_FILE="$(cd -- "$(dirname -- "$INCLUDES_FILE")" && pwd)/$(basename -- "$INCLUDES_FILE")"
   chmod 600 -- "$INCLUDES_FILE"
   for p in "${paths[@]}"; do printf '%s\n' "$p" >> "$INCLUDES_FILE"; done
   # A restore can end before the cleanup below reaches it: the destination
@@ -2367,8 +2428,20 @@ cmd_restore() {
   fi
   progress_write running restore 1
 
-  restic_run restore --json --include-file "$INCLUDES_FILE" --target "$target" -- "$OPT_SNAPSHOT" 2>/dev/null |
-    stream_restore
+  # restic takes the target as an argument and has no file or environment form
+  # for it, so the full path would be world-readable under /proc for the length
+  # of the restore. Running restic from the target's parent turns the argument
+  # into a bare name (the dated directory), which carries no private path.
+  # PIPESTATUS[0] is the subshell's exit, which is restic's -- or 1 if the cd
+  # failed, which is a failure either way.
+  local target_parent target_base
+  target_parent="$(cd -- "$(dirname -- "$target")" 2>/dev/null && pwd)" ||
+    target_parent="$(dirname -- "$target")"
+  target_base="$(basename -- "$target")"
+  (
+    cd -- "$target_parent" || exit 1
+    restic_run restore --json --include-file "$INCLUDES_FILE" --target "$target_base" -- "$OPT_SNAPSHOT" 2>/dev/null
+  ) | stream_restore
   restore_exit="$(number_or "${PIPESTATUS[0]}" 1)"
   rm -f -- "$INCLUDES_FILE"
 
@@ -2724,7 +2797,7 @@ cmd_apply_setup() {
   if [ -n "$(trim "$password")" ] && [ -z "$password_command" ]; then
     keypath="$CONFIG_DIR/$DEST_NAME.key"
     printf '%s\n' "$(trim "$password")" | write_private "$keypath" || die "could not write $keypath"
-    cp -- "$CONFIG_FILE" "$CONFIG_FILE.bak" 2>/dev/null || true
+    write_private "$CONFIG_FILE.bak" < "$CONFIG_FILE" 2>/dev/null || true
     if ! jq --arg n "$DEST_NAME" --arg p "$keypath" \
       '(.destinations[] | select(.name == $n) | .password_file) = $p' <<<"$CONFIG_JSON" \
       | write_private "$CONFIG_FILE"; then
@@ -2756,7 +2829,8 @@ cmd_apply_setup() {
     # snapshot without one.
     DEST_JSON="$(PASSWORD_COMMAND="$password_command" jq \
       '.password_command = $ENV.PASSWORD_COMMAND | del(.password_file)' <<<"$DEST_JSON")"
-    printf 'Password fetched with a command: %s\n' "$password_command"
+    warn_command_secret "password_command of $DEST_NAME" "$password_command"
+    printf 'Password will be fetched with a command.\n'
   fi
 
   if [ -z "$(dest '.password_file // empty')" ] && [ -z "$(dest '.password_command // empty')" ] \
@@ -2773,11 +2847,11 @@ cmd_apply_setup() {
   if restic_run snapshots >/dev/null 2>&1; then
     printf 'The repository already exists -- keeping it.\n'
   elif restic_run init >/dev/null; then
-    printf 'Repository created at %s.\n' "$repository"
+    printf 'Repository created at %s.\n' "$REPO_DISPLAY"
   elif restic_run cat config >/dev/null 2>&1; then
     printf 'The repository already exists -- keeping it.\n'
   else
-    die "could not open or create the repository at $repository -- check the path, and the password if the repository exists elsewhere"
+    die "could not open or create the repository at $REPO_DISPLAY -- check the path, and the password if the repository exists elsewhere"
   fi
 
   cmd_install
@@ -2834,6 +2908,14 @@ Type=oneshot
 Environment=PATH=$(unit_path_env)
 ExecStart=$SELF backup --dest %i
 
+# Nothing the backup prints reaches the journal. Its log lines name the files
+# restic is working on -- paths a file may keep private -- and the journal is a
+# second, durable copy this project does not control (its retention, its
+# permissions, its backups). The plugin's own 0600 log, written by every
+# log_line, is the one place that output is meant to live.
+StandardOutput=null
+StandardError=null
+
 # The first run takes hours, later ones minutes. Leave room, so a slow night is
 # not cut off halfway.
 TimeoutStartSec=8h
@@ -2889,6 +2971,12 @@ Description=Regenerate BackIt Up units after a config change
 Type=oneshot
 Environment=PATH=$(unit_path_env)
 ExecStart=$SELF install
+
+# Same reason as the backup service: the install preflight names source
+# directories it could not read. Those names are shown by the panel and by a
+# manual run; they do not belong in the journal.
+StandardOutput=null
+StandardError=null
 UNIT
 }
 
@@ -2920,10 +3008,34 @@ write_unit() {
     printf '  = %s (unchanged)\n' "$filename"
     return 0
   fi
-  printf '%s\n' "$content" > "$path.tmp.$$" && mv -f -- "$path.tmp.$$" "$path" ||
+  # write_private, not a bare `>`: the unit files are not secret, but the same
+  # helper keeps the write atomic and refuses to follow a symlink at $path.
+  printf '%s\n' "$content" | write_private "$path" ||
     die "could not write $path"
   if [ -n "$existing" ]; then marker='~'; else marker='+'; fi
   printf '  %s %s\n' "$marker" "$filename"
+}
+
+# find's starting points are command-line arguments, and an argument is
+# world-readable under /proc for the whole walk -- which can run for minutes
+# over a large tree. -files0-from (findutils 4.9, 2021) takes them from a file
+# instead. On an older find the caller must skip the walk rather than put the
+# paths back on the command line.
+find_supports_files0_from() {
+  find -P -files0-from /dev/null -maxdepth 0 >/dev/null 2>&1
+}
+
+# One NUL-terminated starting point per existing source, ~ expanded. NUL, not
+# newline: a path may contain one, and -files0-from expects NUL.
+source_roots_to_file() {
+  local file="$1" src
+  : > "$file"
+  while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    src="$(expand_tilde "$src")"
+    [ -e "$src" ] || continue
+    printf '%s\0' "$src" >> "$file"
+  done < <(cfg 'if (.source | type) == "array" then .source[] else (.source // empty) end' 2>/dev/null)
 }
 
 cmd_install() {
@@ -2934,19 +3046,25 @@ cmd_install() {
   # the first run finds out the hard way with a half-failed snapshot. A
   # warning, not a refusal: everything readable still gets backed up, and
   # the directories might be somebody else's problem to fix.
-  unreadable=""
-  while IFS= read -r src; do
-    if [ -z "$src" ]; then continue; fi
-    src="$(expand_tilde "$src")"
-    if [ ! -d "$src" ]; then continue; fi
-    found="$(find "$src" -type d \! -readable 2>/dev/null | head -5)"
-    if [ -n "$found" ]; then
-      unreadable="$unreadable$found
-"
+  #
+  # The walk takes its starting points from a file, never from find's command
+  # line: an argument is world-readable under /proc for the whole walk, and
+  # install runs from the config .path unit on every config change. A find too
+  # old for -files0-from (findutils before 4.9) skips the walk rather than put
+  # the paths back on the command line.
+  local roots="" found="" unreadable=""
+  if find_supports_files0_from && mkdir -p -m 700 -- "$STATE_DIR" 2>/dev/null &&
+     roots="$(mktemp -- "$STATE_DIR/.install-roots.XXXXXX" 2>/dev/null)"; then
+    chmod 600 -- "$roots" 2>/dev/null
+    source_roots_to_file "$roots"
+    if [ -s "$roots" ]; then
+      found="$(find -P -files0-from "$roots" -type d \! -readable -printf '%p\n' 2>/dev/null | head -20)"
+      [ -n "$found" ] && unreadable="$found"
     fi
-  done < <(cfg 'if (.source | type) == "array" then .source[] else (.source // empty) end' 2>/dev/null)
+    rm -f -- "$roots"
+  fi
   if [ -n "$unreadable" ]; then
-    printf 'Warning: the backup will not be able to read:\n%s' "$unreadable"
+    printf 'Warning: the backup will not be able to read:\n%s\n' "$unreadable"
     printf 'Everything readable still gets backed up, but runs with unreadable files count as failed.\n'
     printf 'An ACL fixes it without touching ownership: setfacl -R -m u:%s:rX <dir> (plus -d for future files), or exclude the directory.\n\n' "$USER"
   fi

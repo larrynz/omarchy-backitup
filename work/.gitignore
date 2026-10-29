@@ -1,3 +1,8 @@
 
 # Cortex runtime state (memory + RAG index, regenerable)
 .cortex/
+
+# Security-review artifacts: kept on this machine, never committed or pushed.
+# The pre-push hook (work/git-hooks/pre-push) enforces the push side.
+*audit*
+*security*

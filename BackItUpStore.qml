@@ -568,11 +568,25 @@ Singleton {
   property string setupError: ""
   property string setupDone: ""
   property string setupPendingDoc: ""
-  readonly property string applyTmpFile:
-    (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omarchy-backitup-apply.json"
+  // XDG_RUNTIME_DIR is a 0700 directory owned by the user, which is exactly
+  // what the staged document needs; ~/.cache is the fallback when a session
+  // did not set it. Never /tmp: it is world-writable, and a fixed name there
+  // is a symlink waiting to be planted. Writer and reader both derive the
+  // path from this one property, so they cannot disagree.
+  readonly property string applyDir: {
+    var runtime = Quickshell.env("XDG_RUNTIME_DIR")
+    if (runtime) return runtime + "/omarchy-backitup"
+    var home = Quickshell.env("HOME")
+    return home ? home + "/.cache/omarchy-backitup" : ""
+  }
+  readonly property string applyTmpFile: applyDir ? applyDir + "/apply.json" : ""
 
   function applySetup(doc) {
     if (setupBusy) return
+    if (!applyTmpFile) {
+      setupError = "no runtime directory is available to stage the setup document"
+      return
+    }
     setupBusy = true
     setupError = ""
     setupDone = ""
@@ -585,7 +599,7 @@ Singleton {
   Process {
     id: applyFileProc
     environment: ({ TM_DOC: setupPendingDoc })
-    command: ["bash", "-c", "umask 077; printf '%s' \"$TM_DOC\" > \"$XDG_RUNTIME_DIR/omarchy-backitup-apply.json\""]
+    command: ["bash", "-c", "d=\"${XDG_RUNTIME_DIR:-$HOME/.cache}/omarchy-backitup\"; [ -n \"$TM_DOC\" ] && [ -n \"${XDG_RUNTIME_DIR:-$HOME}\" ] || exit 4; umask 077; mkdir -p -m 700 -- \"$d\" || exit 4; [ -d \"$d\" ] && [ ! -L \"$d\" ] || exit 4; rm -f -- \"$d/apply.json\" || exit 4; set -o noclobber; printf '%s' \"$TM_DOC\" > \"$d/apply.json\""]
     onExited: function(exitCode) {
       if (exitCode !== 0) {
         root.setupBusy = false

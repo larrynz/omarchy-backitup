@@ -81,6 +81,8 @@ The password field supports two storage modes, and clicking the row under the fi
 - **Stored in a key file.** The text you type is the password itself. It is written to `~/.config/omarchy-backitup/<name>.key` with mode 600. It is never written to the config file, and it never appears in a process list.
 - **Fetched with a command.** The text you type is a command that prints the password, stored as `password_command` in the config. Examples: `pass show omarchy/backup`, `op read <secret>`, `bw get <item>`. The command runs on this machine whenever a backup runs, so the password manager's CLI must be installed and unlocked here. Scheduled runs have no terminal to prompt in, so the command must answer without asking: keep the agent's passphrase cached or configure loopback pinentry.
 
+  Do not write the secret *into* the command. `curl -H "Authorization: Bearer …"` puts the token in the command's own arguments, which every local account can read from `/proc` while it runs, no matter how careful the plugin is. Have the command read the secret from the manager or an env file instead, and it stays out of the process list entirely. The plugin warns when a `password_command` or `pre_command` looks like it carries a credential in its text.
+
 Setting both a password and a password command is refused. In the config, only one of these may be set:
 
 ```json
@@ -179,7 +181,7 @@ Destinations such as S3 or REST servers need more than the backup password. Each
 { "name": "offsite", "repository": "s3:s3.amazonaws.com/${bucket}" }
 ```
 
-Everything in the env file is exported to restic and to every command a backup run spawns, so keep it limited to what the backup needs.
+Everything in the env file is exported to restic and to the `pre_command` and `on_failure_command` hooks, and to nothing else -- not to notifications, editors, or file managers a run may start. Names the plugin manages, such as `RESTIC_*`, `PATH`, and `LD_PRELOAD`, are refused rather than accepted. Keep the file limited to what the backup needs.
 
 ## Restoring files
 
@@ -268,7 +270,7 @@ omarchy-backitup check --dest backup-drive               # verify backup integri
 cat ~/.local/state/omarchy-backitup/audit-*.txt          # what the last backup could not read
 ```
 
-The panel's **Log** view shows the same output without a terminal.
+The panel's **Log** view shows the same output without a terminal. That file is the only copy: the scheduled service writes nothing to the systemd journal, because the log names the files restic worked on and the journal is a second, durable copy with its own retention and permissions.
 
 ![The run log](screenshots/log.png)
 
