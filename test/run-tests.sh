@@ -1380,6 +1380,14 @@ check $? "a second apply keeps the repository"
 [ "$(jq '.destinations | map(select(.name == "setup-test")) | length' "$XDG_CONFIG_HOME/omarchy-backitup/config.json")" = "1" ]
 check $? "a second apply does not duplicate the destination"
 
+# The fresh start hardens the config directory, but a re-apply lands in a
+# directory that already exists -- possibly one an earlier tool or a restore
+# left loose. The merge path must tighten it too, not just write into it.
+chmod 755 "$XDG_CONFIG_HOME/omarchy-backitup"
+OUT="$(printf '%s' '{"name":"setup-test","repository":"'"$WORK"'/setup-repo","schedule":"daily","password":"setup-password"}' | $CLI apply-setup 2>&1)"
+[ "$(stat -c %a "$XDG_CONFIG_HOME/omarchy-backitup")" = "700" ]
+check $? "a re-apply tightens a config directory left loose"
+
 # An edit through apply-setup keeps what it does not send. The setup form
 # sends name, repository, schedule, source and optionally a password --
 # retention, pre_command and the password source must survive the merge,

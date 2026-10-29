@@ -2732,8 +2732,12 @@ cmd_apply_setup() {
   # outright -- it only exists to be pointed somewhere, and leaving it in
   # place means the panel lists a destination that cannot work.
   local fresh=0
+  # Both paths write into the config directory, so both harden it first. The
+  # fresh branch used to be the only one; a directory an earlier tool or a
+  # restore left group- or world-readable would stay that way on a re-apply,
+  # and every 0600 file inside it would sit behind a listable directory.
+  config_dir_secure
   if ! user_file "$CONFIG_FILE"; then
-    config_dir_secure
     if ! starter_config | write_private "$CONFIG_FILE"; then die "could not write $CONFIG_FILE"; fi
     fresh=1
   fi
