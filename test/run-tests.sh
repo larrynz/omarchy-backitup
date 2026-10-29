@@ -643,6 +643,14 @@ grep -q "SuccessExitStatus" "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup@.ser
 [ $? -ne 0 ]
 check $? "the service does not excuse restic exit 3"
 
+# The failed unit runs report-failure, whose output can quote a failure
+# reason -- a pre_command's diagnostics, a path. The backup unit already
+# sends nothing to the journal; the failed unit must not either, or every
+# failed backup leaves a durable copy of that text in journalctl.
+grep -q '^StandardOutput=null' "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup-failed@.service" && \
+grep -q '^StandardError=null' "$XDG_CONFIG_HOME/systemd/user/omarchy-backitup-failed@.service"
+check $? "the failed unit sends nothing to the journal either"
+
 # install exits non-zero here because systemd cannot enable a unit under a
 # redirected XDG_CONFIG_HOME. What is under test is that it rewrites nothing.
 OUT="$($CLI install 2>&1)"

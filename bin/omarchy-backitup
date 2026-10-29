@@ -2944,6 +2944,13 @@ Description=Report a failed BackIt Up backup of %i
 Type=oneshot
 Environment=PATH=$(unit_path_env)
 ExecStart=$SELF report-failure --dest %i
+
+# Same as the backup unit: a failure reason can quote a pre_command's output
+# or a path a file keeps private, and the journal is a second, durable copy
+# this project does not control. The reason belongs in the status files and
+# the log, both 0600.
+StandardOutput=null
+StandardError=null
 UNIT
 }
 
