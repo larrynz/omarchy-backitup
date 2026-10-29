@@ -12,7 +12,7 @@
 # local from now on; the pre-push hook names them too, so a stale index or
 # an amended commit cannot bring them back.
 task-state-*
-issue-draft.md
+issue-draft*
 pr-draft.md
 patch-tm*.py
 case-test*.sh
