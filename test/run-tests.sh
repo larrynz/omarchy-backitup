@@ -1890,6 +1890,38 @@ ERR="$($CLI snapshots --dest test --json 2>&1 >/dev/null)"
 grep -qi 'credential' <<<"$ERR"
 [ $? -ne 0 ]
 check $? "and a plain password command is left alone"
+
+# The same lint covers the two hooks a configuration can set. A pre_command
+# runs through prepare_destination on every command that talks to restic; an
+# on_failure_command runs when report-failure fires. Neither may embed a
+# credential quietly. Under --json the warning travels in the error object
+# require_destination hands to die -- the panel's channel, the same one the
+# failed pre_command's diagnostics reach.
+jq --arg c "printf 'Authorization: Bearer lint-token'" --arg r "$WORK/no-such-lint-repo" \
+   '.destinations = [.destinations[] | if .name == "test" then (. + {repository: $r, pre_command: $c} | del(.password_command)) else . end]' \
+   "$XDG_CONFIG_HOME/omarchy-backitup/config.json" > "$WORK/config.lint3"
+mv "$WORK/config.lint3" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+OUT="$($CLI snapshots --dest test --json 2>/dev/null)"
+grep -qi 'credential' <<<"$OUT"
+check $? "a pre_command that embeds a credential is called out"
+
+jq --arg c "printf 'Authorization: Bearer lint-token'" \
+   '.destinations = [.destinations[] | if .name == "test" then (. + {on_failure_command: $c} | del(.pre_command)) else . end]' \
+   "$XDG_CONFIG_HOME/omarchy-backitup/config.json" > "$WORK/config.lint4"
+mv "$WORK/config.lint4" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+OUT="$($CLI report-failure --dest test 2>&1)"
+grep -qi 'credential' <<<"$OUT"
+check $? "an on_failure_command that embeds a credential is called out"
+
+jq --arg c 'printf plain-hook' \
+   '.destinations = [.destinations[] | if .name == "test" then (. + {on_failure_command: $c} | del(.pre_command)) else . end]' \
+   "$XDG_CONFIG_HOME/omarchy-backitup/config.json" > "$WORK/config.lint5"
+mv "$WORK/config.lint5" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
+OUT="$($CLI report-failure --dest test 2>&1)"
+grep -qi 'credential' <<<"$OUT"
+[ $? -ne 0 ]
+check $? "and a plain on_failure_command is left alone"
+
 mv "$WORK/config.before-lint" "$XDG_CONFIG_HOME/omarchy-backitup/config.json"
 
 group "A secrets file cannot hijack the environment"

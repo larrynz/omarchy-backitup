@@ -677,6 +677,10 @@ prepare_destination() {
     # log line reaches stderr and require_destination captures it for die. The
     # configuration file is the one place the text lives.
     log_line "pre_command: running the configured command"
+    # The same lint the password_command gets: the text runs in a child shell
+    # whose argv under bash -c 'eval' is one word, but what the command itself
+    # prints is its own exposure.
+    warn_command_secret "pre_command of $DEST_NAME" "$cmd"
     PRE_COMMAND="$cmd" with_secrets timeout "$PRE_COMMAND_TIMEOUT" bash -c 'eval "$PRE_COMMAND"' >&2
     status=$?
     if [ "$status" != "0" ]; then
@@ -2232,6 +2236,11 @@ run_failure_command() {
   cmd="$(dest '.on_failure_command // empty')"
   cmd="${cmd:-$(cfg '.on_failure_command // empty')}"
   if [ -z "$cmd" ]; then return 0; fi
+
+  # The same lint the password_command and pre_command get: the hook runs in a
+  # child shell, and a credential written into its text is exposed while it
+  # lives, no matter how the text reaches the shell.
+  warn_command_secret "on_failure_command of $DEST_NAME" "$cmd"
 
   ON_FAILURE_COMMAND="$cmd" DESTINATION="$DEST_NAME" EXIT_CODE="$exit_code" LOG_FILE="$logfile" \
     with_secrets setsid bash -c 'eval "$ON_FAILURE_COMMAND"' >/dev/null 2>&1 &
