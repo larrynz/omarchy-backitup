@@ -23,6 +23,11 @@ WORK="$(mktemp -d)"
 export OMARCHY_BACKITUP_QUIET=1
 export XDG_CONFIG_HOME="$WORK/config"
 export XDG_STATE_HOME="$WORK/state"
+# The ls cache lives here in production; redirect it so a test run leaves no
+# listings behind in the real /run/user directory. One test below points
+# systemd-analyze back at the real runtime dir, whose absence its manager
+# init cannot survive.
+export XDG_RUNTIME_DIR="$WORK/runtime"
 
 PASSED=0
 FAILED=0
@@ -340,7 +345,8 @@ CACHE_DIR="$WORK/runtime/omarchy-backitup"
 check $? "the ls cache lives under the runtime directory"
 [ "$(stat -c %a "$CACHE_DIR")" = "700" ]
 check $? "and the cache directory is 700"
-CACHE_FILE="$CACHE_DIR/ls-$(printf '%s' "test/$LSNAP" | md5sum | cut -d' ' -f1).ndjson"
+# The fixture's destination repository: the cache key hashes it too.
+CACHE_FILE="$CACHE_DIR/ls-$(printf '%s' "$WORK/repo/$LSNAP" | md5sum | cut -d' ' -f1).ndjson"
 [ -f "$CACHE_FILE" ] && [ "$(stat -c %a "$CACHE_FILE")" = "600" ]
 check $? "and the cache file is 600"
 
@@ -710,7 +716,8 @@ OUT="$($CLI install 2>&1)"
 check $? "install rewrites nothing on a second run"
 
 if command -v systemd-analyze >/dev/null 2>&1; then
-  (cd "$XDG_CONFIG_HOME/systemd/user" && systemd-analyze --user verify ./omarchy-backitup@.service >/dev/null 2>&1)
+  (cd "$XDG_CONFIG_HOME/systemd/user" && XDG_RUNTIME_DIR="/run/user/$(id -u)" \
+    systemd-analyze --user verify ./omarchy-backitup@.service >/dev/null 2>&1)
   check $? "systemd accepts the generated service"
 fi
 

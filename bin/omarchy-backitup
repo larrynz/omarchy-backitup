@@ -1420,11 +1420,14 @@ cmd_ls() {
   # out afterwards, by a jq that reads the path from the environment. The
   # stream is cut at a line boundary after the filter, so memory stays bounded
   # no matter how big the snapshot is. A snapshot's tree never changes once
-  # written, so the raw listing is cached per destination and snapshot under
+  # written, so the raw listing is cached per repository and snapshot under
   # XDG_RUNTIME_DIR (tmpfs, 0700): the first browse of a snapshot pays one
   # full walk, every later browse of any directory in it reads the cache, and
-  # a reboot takes the cache with it. A cache the runtime directory cannot
-  # hold -- write failure, quota -- simply falls back to streaming.
+  # a reboot takes the cache with it. The key hashes the repository as well as
+  # the snapshot id, so two destinations that happen to share a name -- or a
+  # moved repository -- never read each other's cache. A cache the runtime
+  # directory cannot hold -- write failure, quota -- simply falls back to
+  # streaming.
   local filter='select(has("name") and (.path // "") != $ENV.BACKITUP_LS_PATH)
     | (($ENV.BACKITUP_LS_PATH | [split("/")[] | select(. != "")]) as $base
        | ((.path // "") | [split("/")[] | select(. != "")]) as $parts
@@ -1433,7 +1436,7 @@ cmd_ls() {
   local cache="" tmp="" src=""
   if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
     if mkdir -p -m 700 -- "${XDG_RUNTIME_DIR}/omarchy-backitup" 2>/dev/null; then
-      cache="${XDG_RUNTIME_DIR}/omarchy-backitup/ls-$(printf '%s' "$DEST_NAME/$OPT_SNAPSHOT" | md5sum | cut -d' ' -f1).ndjson"
+      cache="${XDG_RUNTIME_DIR}/omarchy-backitup/ls-$(printf '%s' "$RESTIC_REPOSITORY/$OPT_SNAPSHOT" | md5sum | cut -d' ' -f1).ndjson"
       [ -s "$cache" ] && src="$cache"
     fi
   fi
