@@ -303,6 +303,58 @@ check $? "and it is capped at LS_ENTRY_CAP rows"
 jq -e '.truncated == true' <<<"$BIGLS" >/dev/null 2>&1
 check $? "and says so, rather than presenting a partial listing as complete"
 
+# --- the browsed path stays off every command line -------------------------
+#
+# restic takes a directory filter only as a positional argument, so the old
+# listing handed the browsed path straight to restic's argv -- world-readable
+# under /proc for the whole walk, and the path can sit inside a directory the
+# user keeps private. The listing is whole-snapshot now, filtered afterwards
+# by a jq that reads the path from the environment, and cached per snapshot
+# under XDG_RUNTIME_DIR so repeated browsing does not re-walk the tree.
+
+group_restic "Browsing stays off the command line"
+
+# A recording wrapper in front of the real restic: it logs every argument and
+# counts invocations, then execs the real binary.
+mkdir -p "$WORK/restic-rec"
+printf '#!/usr/bin/bash\nprintf "%%s\\0" "$@" >> "$RESTIC_ARGV"\nprintf "x\\n" >> "$RESTIC_CALLS"\nexec %q "$@"\n' "$(command -v restic)" > "$WORK/restic-rec/restic"
+chmod +x "$WORK/restic-rec/restic"
+
+# A snapshot of its own, so this group's cache is cold even though earlier
+# groups already browsed their snapshots.
+$CLI backup --dest test >/dev/null 2>&1
+LSNAP="$($CLI snapshots --dest test --json | jq -r '.snapshots[0].id')"
+
+rm -f "$WORK/restic-argv2" "$WORK/restic-calls"
+RESTIC_ARGV="$WORK/restic-argv2" RESTIC_CALLS="$WORK/restic-calls" \
+  XDG_RUNTIME_DIR="$WORK/runtime" PATH="$WORK/restic-rec:$PATH" \
+  $CLI ls --dest test --snapshot "$LSNAP" --path "$WORK/src" --json > "$WORK/ls-rec.json" 2>/dev/null
+jq -e --arg p "$WORK/src" '.ok == true and .path == $p' "$WORK/ls-rec.json" >/dev/null 2>&1
+check $? "browsing still works with a recorder in front of restic"
+grep -q -- "$WORK/src" "$WORK/restic-argv2" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and the browsed path appears in no argument restic is given"
+
+CACHE_DIR="$WORK/runtime/omarchy-backitup"
+[ -d "$CACHE_DIR" ]
+check $? "the ls cache lives under the runtime directory"
+[ "$(stat -c %a "$CACHE_DIR")" = "700" ]
+check $? "and the cache directory is 700"
+CACHE_FILE="$CACHE_DIR/ls-$(printf '%s' "test/$LSNAP" | md5sum | cut -d' ' -f1).ndjson"
+[ -f "$CACHE_FILE" ] && [ "$(stat -c %a "$CACHE_FILE")" = "600" ]
+check $? "and the cache file is 600"
+
+# A second browse of a different directory in the same snapshot must be
+# served from the cache: one walk per snapshot, not one per click.
+BEFORE_CALLS="$(grep -c x "$WORK/restic-calls")"
+XDG_RUNTIME_DIR="$WORK/runtime" \
+  $CLI ls --dest test --snapshot "$LSNAP" --path "$WORK/src/docs" --json > "$WORK/ls-rec2.json" 2>/dev/null
+jq -e '.ok == true and ([.entries[].name] | join(",")) == "note.txt,report.md"' \
+  "$WORK/ls-rec2.json" >/dev/null 2>&1
+check $? "a second browse of the same snapshot reads the cache and answers correctly"
+[ "$(grep -c x "$WORK/restic-calls")" = "$BEFORE_CALLS" ]
+check $? "and the cached browse does not invoke restic again"
+
 # --- untrusted text in shell components ------------------------------------
 #
 # Filenames come out of the backup, and a Text with no textFormat falls back to
@@ -988,29 +1040,36 @@ cp "$WORK/config.before-scope" "$CONFIG"
 rm -f "$WORK/stub/notify-send"
 
 # The same handoff for the restore browser: the browsed path arrives through
-# the environment, and a stub restic answers with a listing under it.
+# the environment, and a stub restic answers with a listing under it. The
+# stub takes the root from its own environment (the CLI hands the path to the
+# filter jq, not to restic) and emits a child and a grandchild, so the
+# direct-children filter is pinned as well.
 cat > "$WORK/stub-restic/restic" <<'STUB'
 #!/usr/bin/bash
 printf '%s\0' "$@" >> "$RESTIC_ARGV"
 tr '\0' '\n' < "/proc/$PPID/cmdline" > "$RESTIC_PARENT" 2>/dev/null
-p="${@: -1}"
+p="${LS_TEST_ROOT:-/}"
 printf '%s\n' '{"message_type":"ls","struct_type":"node","name":"docs","type":"dir","path":"'"$p"'/docs","size":0,"mtime":"2026-01-01T00:00:00Z"}'
+printf '%s\n' '{"message_type":"ls","struct_type":"node","name":"note.txt","type":"file","path":"'"$p"'/docs/note.txt","size":6,"mtime":"2026-01-01T00:00:00Z"}'
 exit 0
 STUB
 chmod +x "$WORK/stub-restic/restic"
 rm -f "$WORK/restic-argv" "$WORK/jq-argv"
 BACKITUP_LS_PATH="$WORK/src" RESTIC_ARGV="$WORK/restic-argv" RESTIC_PARENT="$WORK/cli-argv3" \
-  JQ_ARGV_LOG="$WORK/jq-argv" \
+  LS_TEST_ROOT="$WORK/src" JQ_ARGV_LOG="$WORK/jq-argv" \
   PATH="$WORK/stub-bin:$WORK/stub-restic:$PATH" $CLI ls --dest test --snapshot 12345678 --json > "$WORK/ls-out.json" 2>/dev/null
-jq -e --arg p "$WORK/src" '.ok == true and .path == $p and .entries[0].name == "docs"' \
+jq -e --arg p "$WORK/src" '.ok == true and .path == $p and (.entries | length == 1) and .entries[0].name == "docs"' \
   "$WORK/ls-out.json" >/dev/null 2>&1
-check $? "ls reads the browsed path from the environment"
+check $? "ls reads the browsed path from the environment and shows direct children only"
 grep -q -- "$WORK/src" "$WORK/cli-argv3"
 [ $? -ne 0 ]
 check $? "and keeps it off the CLI's own command line"
 grep -q -- "$WORK/src" "$WORK/jq-argv"
 [ $? -ne 0 ]
 check $? "and off jq's command line too"
+grep -q -- "$WORK/src" "$WORK/restic-argv" 2>/dev/null
+[ $? -ne 0 ]
+check $? "and off restic's command line, which only ever sees the snapshot id"
 
 # The folders to back up reach the config through the setup document, and
 # the merge that writes them hands the list to jq as an argument.

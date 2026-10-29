@@ -1413,11 +1413,53 @@ cmd_ls() {
   restic_context
   require_destination
 
+  # restic takes a directory filter only as a positional argument, so asking
+  # it to do the filtering would put the browsed path on restic's own command
+  # line -- world-readable under /proc for the whole walk. The snapshot is
+  # listed whole and the direct children of the browsed directory are picked
+  # out afterwards, by a jq that reads the path from the environment. The
+  # stream is cut at a line boundary after the filter, so memory stays bounded
+  # no matter how big the snapshot is. A snapshot's tree never changes once
+  # written, so the raw listing is cached per destination and snapshot under
+  # XDG_RUNTIME_DIR (tmpfs, 0700): the first browse of a snapshot pays one
+  # full walk, every later browse of any directory in it reads the cache, and
+  # a reboot takes the cache with it. A cache the runtime directory cannot
+  # hold -- write failure, quota -- simply falls back to streaming.
+  local filter='select(has("name") and (.path // "") != $ENV.BACKITUP_LS_PATH)
+    | (($ENV.BACKITUP_LS_PATH | [split("/")[] | select(. != "")]) as $base
+       | ((.path // "") | [split("/")[] | select(. != "")]) as $parts
+       | select(($parts | length) == ($base | length) + 1)
+       | select($parts[0:($base | length)] == $base))'
+  local cache="" tmp="" src=""
+  if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    if mkdir -p -m 700 -- "${XDG_RUNTIME_DIR}/omarchy-backitup" 2>/dev/null; then
+      cache="${XDG_RUNTIME_DIR}/omarchy-backitup/ls-$(printf '%s' "$DEST_NAME/$OPT_SNAPSHOT" | md5sum | cut -d' ' -f1).ndjson"
+      [ -s "$cache" ] && src="$cache"
+    fi
+  fi
+  if [ -z "$src" ] && [ -n "$cache" ]; then
+    tmp="$(mktemp -- "$cache.XXXXXX" 2>/dev/null)" || tmp=""
+    if [ -n "$tmp" ]; then
+      chmod 600 -- "$tmp" 2>/dev/null || true
+      if restic_run ls --json -- "$OPT_SNAPSHOT" 2>/dev/null > "$tmp" && [ -s "$tmp" ]; then
+        mv -f -- "$tmp" "$cache"
+        src="$cache"
+      else
+        rm -f -- "$tmp"
+        BACKITUP_LS_PATH="$path" jq -nc '{ok:false, error:"could not list snapshot", path:$ENV.BACKITUP_LS_PATH, entries:[]}'
+        return 0
+      fi
+    fi
+  fi
+
   local out
-  # restic writes one JSON object per line, so a line ceiling cuts cleanly --
-  # no half object for jq to choke on -- and it bounds the read before bash or
-  # jq ever hold it.
-  out="$(restic_run ls --json -- "$OPT_SNAPSHOT" "$path" 2>/dev/null | head -n "$LS_LINE_CAP" | head -c "$((LS_BYTE_CAP + 1))")"
+  if [ -n "$src" ]; then
+    out="$(BACKITUP_LS_PATH="$path" jq -c "$filter" -- "$src" 2>/dev/null | head -n "$LS_LINE_CAP" | head -c "$((LS_BYTE_CAP + 1))")"
+  else
+    out="$(restic_run ls --json -- "$OPT_SNAPSHOT" 2>/dev/null \
+          | BACKITUP_LS_PATH="$path" jq -c "$filter" 2>/dev/null \
+          | head -n "$LS_LINE_CAP" | head -c "$((LS_BYTE_CAP + 1))")"
+  fi
   if over_byte_cap "$out" "$LS_BYTE_CAP"; then
     BACKITUP_LS_PATH="$path" jq -nc '{ok:false, error:"listing too large to read safely", path:$ENV.BACKITUP_LS_PATH, entries:[]}'; return 0
   fi
